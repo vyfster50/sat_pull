@@ -691,6 +691,30 @@ def analyze_thresholds(metrics):
                 "message": f"Sentinel-2 cloud cover {cloud_pct:.0f}% - Check for Landsat fallback."
             })
 
+    # 3. Calculate Composite Risk Score (Phase 4)
+    risk_score = 0
+    severity_weights = {"High": 30, "Medium": 10, "Info": 0}
+    
+    for alert in results["alerts"]:
+        weight = severity_weights.get(alert["severity"], 0)
+        risk_score += weight
+    
+    # Cap score at 100 for normalization
+    normalized_score = min(risk_score, 100)
+    
+    # Determine Risk Level
+    if normalized_score >= 60:
+        risk_level = "CRITICAL"
+    elif normalized_score >= 30:
+        risk_level = "HIGH"
+    elif normalized_score >= 10:
+        risk_level = "MODERATE"
+    else:
+        risk_level = "LOW"
+        
+    results["risk_score"] = normalized_score
+    results["risk_level"] = risk_level
+
     return results
 
 def generate_response(processed_data, analysis_results, raw_data=None):
@@ -720,11 +744,25 @@ def generate_response(processed_data, analysis_results, raw_data=None):
 
     if "stats" in analysis_results:
          print(f"Stats: {analysis_results['stats']}")
+         
+    # Display Risk Score (Phase 4)
+    risk_score = analysis_results.get("risk_score", 0)
+    risk_level = analysis_results.get("risk_level", "LOW")
+    print(f"\n--- COMPOSITE RISK ASSESSMENT ---")
+    print(f"Risk Score: {risk_score}/100")
+    print(f"Risk Level: {risk_level}")
+    print("---------------------------------")
+    
     if analysis_results["alerts"]:
-        for alert in analysis_results["alerts"]:
+        # Sort alerts by severity for display (High -> Medium -> Info)
+        severity_order = {"High": 0, "Medium": 1, "Info": 2}
+        sorted_alerts = sorted(analysis_results["alerts"], key=lambda x: severity_order.get(x["severity"], 99))
+        
+        print("\n--- ACTIVE ALERTS ---")
+        for alert in sorted_alerts:
             print(f"[{alert['severity'].upper()}] {alert['type']}: {alert['message']}")
     else:
-        print("No active alerts. Crop conditions appear normal.")
+        print("\nNo active alerts. Crop conditions appear normal.")
     print("=======================\n")
 
     # Extract dates for tile titles
