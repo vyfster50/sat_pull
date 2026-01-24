@@ -4,6 +4,8 @@
 
 Building on v2's foundation (Sentinel-2 NDVI, LST, Sentinel-1 radar, rainfall, crop mask), v3 adds **5 new analytical layers** for comprehensive agricultural monitoring.
 
+**Current Status (Jan 24, 2026):** Phase 1 ✅ complete. Phase 2 ✅ complete. Processing pipeline fully operational with 8 alert rules and 3×3 visualization grid.
+
 ---
 
 ## Layer Status
@@ -234,17 +236,20 @@ if items_sm:
 
 ## Implementation Phases
 
-### Phase 1: Core Data Acquisition
-- [ ] Add `sortby` to all STAC queries ✅ (done in v2)
-- [ ] Fetch 30-day rainfall stack
-- [ ] Fetch WaPOR soil moisture
-- [ ] Add Landsat SR fallback query
+### Phase 1: Core Data Acquisition ✅ COMPLETE
+- [x] Add `sortby` to all STAC queries ✅ (done in v2)
+- [x] Fetch 30-day rainfall stack → `rain_7d`, `rain_30d` arrays
+- [x] Fetch WaPOR soil moisture → `relative_soil_moisture` band
+- [x] Add Landsat SR fallback query → triggered when S2 cloud > 50%
+- [x] Track NDVI source indicator → "S2" or "Landsat"
+- **Status:** All data layers fetching successfully. 30-day rainfall tested (30 items stacked). WaPOR soil moisture available (latest 2025-03-11). Landsat SR fallback logic ready.
 
-### Phase 2: Processing Pipeline
-- [ ] Implement rainfall accumulation (7d, 30d sums)
-- [ ] Implement LST baseline computation
-- [ ] Implement flood threshold detection
-- [ ] Add NDVI source switching logic
+### Phase 2: Processing Pipeline ✅ COMPLETE
+- [x] Implement rainfall accumulation (7d, 30d sums) ✅ (process_rainfall_accumulation)
+- [x] Implement LST baseline computation ✅ (compute_lst_baseline)
+- [x] Implement flood threshold detection ✅ (compute_flood_mask)
+- [x] Add NDVI source switching logic ✅ (already in get_satellite_data)
+- **Status:** All processing functions integrated into pipeline. 3×3 visualization grid active. 8 alert rules deployed.
 
 ### Phase 3: Visualization
 - [ ] Expand grid to 3×3
