@@ -20,13 +20,13 @@ Building on the v3 foundation, v4 focuses on bridging the gap between basic moni
 - [ ] **Visualization:** Line graphs for temp/rain trends.
 
 ### B. Advanced Vegetation Indices (Priority 2)
-- [ ] **EVI (Enhanced Vegetation Index):** $2.5 \cdot \frac{NIR - Red}{NIR + 6 \cdot Red - 7.5 \cdot Blue + 1}$
-- [ ] **SAVI (Soil Adjusted Vegetation Index):** $\frac{NIR - Red}{NIR + Red + L} \cdot (1 + L)$
-- [ ] **RVI (Radar Vegetation Index):** $4 \cdot \frac{VH}{VV + VH}$
+- [x] **EVI (Enhanced Vegetation Index):** $2.5 \cdot \frac{NIR - Red}{NIR + 6 \cdot Red - 7.5 \cdot Blue + 1}$
+- [x] **SAVI (Soil Adjusted Vegetation Index):** $\frac{NIR - Red}{NIR + Red + L} \cdot (1 + L)$
+- [x] **RVI (Radar Vegetation Index):** $4 \cdot \frac{VH}{VV + VH}$
 
 ### C. Water & Irrigation Management (Priority 3)
-- [ ] **NDMI (Moisture Index):** $\frac{NIR - SWIR}{NIR + SWIR}$ (Requires Sentinel-2 B11).
-- [ ] **NDWI (Water Index):** $\frac{Green - NIR}{Green + NIR}$
+- [x] **NDMI (Moisture Index):** $\frac{NIR - SWIR}{NIR + SWIR}$ (Requires Sentinel-2 B11).
+- [x] **NDWI (Water Index):** $\frac{Green - NIR}{Green + NIR}$
 - [x] **Evapotranspiration (ET):** Fetch `iwmi_green_et_monthly` (Replacement for deprecated WaPOR v2).
 
 ### D. Accessibility

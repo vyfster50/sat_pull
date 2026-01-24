@@ -34,10 +34,16 @@ try:
     print(f'   Processed keys: {list(processed.keys())}')
     
     # Check Phase 2 outputs
-    phase2_outputs = ['lst_anomaly', 'flood_mask', 'flood_risk', 'rain_7d', 'rain_30d']
+    phase2_outputs = ['lst_anomaly', 'flood_mask', 'flood_risk', 'rain_7d', 'rain_30d', 
+                      'evi', 'savi', 'ndmi', 'ndwi', 'rvi', 'weather']
     for key in phase2_outputs:
         if key in processed:
-            print(f'   ✓ {key}: shape={processed[key].shape}')
+            if processed[key] is not None:
+                # Handle boolean arrays (cloud_mask) or scalar values if any
+                shape = getattr(processed[key], 'shape', 'scalar')
+                print(f'   ✓ {key}: shape={shape}')
+            else:
+                print(f'   - {key}: None (Data missing)')
         else:
             print(f'   ✗ {key}: MISSING')
 except Exception as e:

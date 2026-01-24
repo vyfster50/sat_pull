@@ -41,3 +41,35 @@ def compute_flood_mask(s1_vv, s1_vh):
     flood_risk = np.where(vv_db > -8, 0, flood_risk)
     
     return flood_mask_combined, flood_risk
+
+def compute_rvi(s1_vv, s1_vh):
+    """
+    Computes Radar Vegetation Index (RVI) from Sentinel-1 data.
+    RVI = 4 * VH / (VV + VH)
+    Range: 0 (bare soil) to 1 (dense vegetation)
+    """
+    print("  Computing RVI from Sentinel-1...")
+    
+    # Convert linear to dB for safe processing or work in linear?
+    # RVI formula is usually applied to linear power (intensity), not dB.
+    # The read_band function returns whatever the source is. 
+    # Sentinel-1 RTC on Microsoft Planetary Computer is usually Gamma0 power (linear) or float32.
+    # If the values are very small (e.g. 0.0something), they are linear.
+    # If they are negative (e.g. -10), they are dB.
+    
+    # Assuming linear based on typical STAC RTC assets, but let's add a check/conversion just in case.
+    # Actually, look at compute_flood_mask: it converts to_db(x) -> 10*log10.
+    # This implies the input IS linear.
+    
+    # RVI formula relies on linear power values.
+    # Ensure no division by zero.
+    epsilon = 1e-10
+    denominator = s1_vv + s1_vh + epsilon
+    
+    rvi = (4 * s1_vh) / denominator
+    
+    # RVI should be roughly 0 to 1.
+    # Sometimes it can exceed 1 due to noise or double bounce, clip it.
+    rvi = np.clip(rvi, 0, 1)
+    
+    return rvi

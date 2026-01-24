@@ -1,6 +1,6 @@
 import numpy as np
 from .thermal import compute_lst_baseline
-from .radar import compute_flood_mask
+from .radar import compute_flood_mask, compute_rvi
 from .weather import process_rainfall_accumulation
 
 def process_indices(data):
@@ -9,28 +9,64 @@ def process_indices(data):
     
     # Helper for safe division
     def safe_div(a, b):
-        return np.divide(a, b, out=np.zeros_like(a), where=b!=0)
+        return np.divide(a, b, out=np.zeros_like(a, dtype=float), where=b!=0)
     
     # Process Sentinel-2 Indices
     if data.get("s2"):
         s2 = data["s2"]
         
-        # 1. RGB
+        # Convert to float reflectance (0-1) for indices that require it
+        # Sentinel-2 scaling factor is typically 10000
+        red_ref = s2["red"] / 10000.0
+        nir_ref = s2["nir"] / 10000.0
+        blue_ref = s2["blue"] / 10000.0
+        green_ref = s2["green"] / 10000.0
+        swir_ref = s2["swir"] / 10000.0 if "swir" in s2 else None
+        red_edge_ref = s2["red_edge"] / 10000.0 if "red_edge" in s2 else None
+        
+        # 1. RGB (Visualization only, scaling logic preserved)
         def norm(b):
             return np.clip(b / 3000, 0, 1)
         processed["rgb"] = np.dstack([norm(s2["red"]), norm(s2["green"]), norm(s2["blue"])])
 
         # 2. NDVI: (NIR - Red) / (NIR + Red)
-        processed["ndvi"] = safe_div((s2["nir"] - s2["red"]), (s2["nir"] + s2["red"]))
+        processed["ndvi"] = safe_div((nir_ref - red_ref), (nir_ref + red_ref))
 
         # 3. NDRE: (NIR - RedEdge) / (NIR + RedEdge)
-        processed["ndre"] = safe_div((s2["nir"] - s2["red_edge"]), (s2["nir"] + s2["red_edge"]))
+        if red_edge_ref is not None:
+            processed["ndre"] = safe_div((nir_ref - red_edge_ref), (nir_ref + red_edge_ref))
 
-        # 4. Cloud Mask (SCL)
+        # 4. EVI: 2.5 * (NIR - Red) / (NIR + 6*Red - 7.5*Blue + 1)
+        evi_denominator = nir_ref + 6 * red_ref - 7.5 * blue_ref + 1
+        processed["evi"] = 2.5 * safe_div((nir_ref - red_ref), evi_denominator)
+        # Clip EVI to reasonable range -1 to 1 (or slightly wider as EVI can exceed)
+        processed["evi"] = np.clip(processed["evi"], -1.0, 2.5)
+
+        # 5. SAVI: ((NIR - Red) / (NIR + Red + L)) * (1 + L)
+        L = 0.5
+        processed["savi"] = safe_div((nir_ref - red_ref), (nir_ref + red_ref + L)) * (1 + L)
+        
+        # 6. NDMI: (NIR - SWIR) / (NIR + SWIR)
+        if swir_ref is not None:
+             processed["ndmi"] = safe_div((nir_ref - swir_ref), (nir_ref + swir_ref))
+             
+        # 7. NDWI: (Green - NIR) / (Green + NIR)
+        processed["ndwi"] = safe_div((green_ref - nir_ref), (green_ref + nir_ref))
+
+        # 8. Cloud Mask (SCL)
         # SCL: 3=Shadow, 8=Medium, 9=High, 10=Cirrus
         cloud_mask = np.isin(s2["scl"], [3, 8, 9, 10])
         processed["cloud_mask"] = cloud_mask
     
+    # Phase 2: Process Radar Indices (RVI)
+    if data.get("s1"):
+        s1 = data["s1"]
+        processed["rvi"] = compute_rvi(s1["vv"], s1["vh"])
+
+    # Pass through weather data for visualization
+    if data.get("weather"):
+        processed["weather"] = data["weather"]
+
     # Phase 2: Process Landsat LST with Anomaly Computation
     if data.get("landsat"):
         st_dn = data["landsat"]["st"]
