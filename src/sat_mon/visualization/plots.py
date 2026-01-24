@@ -9,21 +9,29 @@ class CropMonitorVisualizer:
         self.raw_data = raw_data
         self.fig = None
         self.view_mode = 'grid'  # 'grid' or 'overlay'
-        
+        self.active_overlay_key = 'ndvi' # Default selected overlay
+
         # Layer configurations for Overlay Mode
-        # Format: (key, label, default_alpha, cmap, vmin, vmax)
+        # Format: (key, label, default_alpha, cmap, vmin, vmax, colorbar_label, description)
         self.layers_config = [
-            ("rgb", "RGB (Base)", 1.0, None, None, None),
-            ("crop_mask_plot", "Crop Mask", 0.3, "autumn_r", 0, 1),
-            ("lst", "LST (Temp)", 0.0, "inferno", 15, 50),
-            ("ndvi", "NDVI", 0.0, "RdYlGn", -0.2, 0.8),
-            ("flood_mask", "Flood Mask", 0.5, "Blues", 0, 1),
+            ("rgb", "RGB (Base)", 1.0, None, None, None, None, "True color composite"),
+            ("evi", "EVI", 0.5, "YlGn", 0, 1, "EVI", "Improved sensitivity in high biomass"),
+            ("savi", "SAVI", 0.5, "YlGn", 0, 1, "SAVI", "Corrects for soil brightness"),
+            ("ndmi", "NDMI", 0.5, "Blues", -0.5, 0.5, "NDMI", "Vegetation water content"),
+            ("ndwi", "NDWI", 0.5, "Blues", -0.5, 0.5, "NDWI", "Surface water detection"),
+            ("rvi", "RVI (Radar)", 0.5, "YlGn", 0, 1, "RVI", "Vegetation structure/biomass"),
+            ("crop_mask_plot", "Crop Mask", 0.3, "autumn_r", 0, 1, "Class", "Yellow=cropland | Gray=other"),
+            ("lst", "LST (Temp)", 0.5, "inferno", 15, 50, "Temp (°C)", "Dark=cooler | Bright=hotter"),
+            ("lst_anomaly", "LST Anom.", 0.5, "RdBu_r", -5, 5, "Deviation", "Red=hotter than baseline"),
+            ("soil_moisture", "Soil Moisture", 0.5, "YlGn", 0, 100, "Moisture (%)", "Green=adequate | Yellow=dry"),
+            ("ndvi", "NDVI", 0.5, "RdYlGn", -0.2, 0.8, "NDVI Index", "Green=healthy (>0.5) | Yellow=stressed (<0.3)"),
+            ("flood_mask", "Flood Mask", 0.5, "Blues", 0, 1, "Probability", "VV < -15 dB detection"),
         ]
         
-        # Initialize layer states (visibility, opacity)
-        self.layer_states = {
-            key: {'visible': (default_alpha > 0), 'alpha': default_alpha}
-            for key, _, default_alpha, _, _, _ in self.layers_config
+        # Initialize layer alpha states (opacity only, visibility handled by active key)
+        self.layer_alphas = {
+            key: default_alpha
+            for key, _, default_alpha, _, _, _, _, _ in self.layers_config
         }
         
         # Widget references to prevent garbage collection
@@ -156,86 +164,138 @@ class CropMonitorVisualizer:
         # --- ROW 5 (Weather) ---
         self.draw_rainfall_row(gs, row_idx=4)
 
+    def get_layer_title(self, key, base_label):
+        """Generates dynamic title with date."""
+        date_map = {
+            'rgb': 's2', 'ndvi': 's2', 'evi': 's2', 'savi': 's2', 'ndmi': 's2', 'ndwi': 's2',
+            'flood_mask': 's1', 'rvi': 's1',
+            'crop_mask_plot': 'crop_mask',
+            'lst': 'landsat', 'lst_anomaly': 'landsat',
+            'soil_moisture': 'soil_moisture',
+            'rain_7d': 'rain', 'rain_30d': 'rain'
+        }
+        
+        # Special logic for NDVI source
+        if key == 'ndvi':
+            source = self.raw_data.get("ndvi_source", "S2") if self.raw_data else "S2"
+            d_key = 's2' if source == "S2" else 'landsat'
+            date = self.get_date_short(d_key)
+            return f"{base_label} ({source}) - {date}"
+
+        date_key = date_map.get(key, key)
+        date = self.get_date_short(date_key)
+        return f"{base_label} - {date}"
+
     def draw_overlay_view(self):
         """Renders the Single Image Overlay view."""
         # Layout: Main Map (Top), Controls (Right/Side), Rainfall (Bottom)
-        # Using GridSpec: 
-        # Rows: 0-3 (Map), 4 (Rainfall)
-        # Cols: 0-2 (Map), 3 (Controls - conceptual, handled via axes placement)
         
         gs = gridspec.GridSpec(5, 4, figure=self.fig, width_ratios=[1, 1, 1, 0.8], height_ratios=[1,1,1,1, 0.8])
         
         # 1. Main Map Axis (Spans first 3 cols, first 4 rows)
         ax_map = self.fig.add_subplot(gs[0:4, 0:3])
-        ax_map.set_title("Composite Overlay Analysis", fontsize=14)
+        
+        # --- RENDER RGB BASE (Always On) ---
+        if "rgb" in self.processed_data:
+            ax_map.imshow(self.processed_data["rgb"])
+        else:
+            ax_map.text(0.5, 0.5, "RGB Base Not Available", ha='center', color='white')
+
+        # --- RENDER ACTIVE OVERLAY ---
+        key = self.active_overlay_key
+        # Find config for active key
+        config = next((item for item in self.layers_config if item[0] == key), None)
+        
+        if config and key != 'rgb' and key in self.processed_data:
+            key, label, _, cmap, vmin, vmax, cb_label, desc = config
+            alpha = self.layer_alphas[key]
+            
+            # Draw Overlay
+            im = ax_map.imshow(self.processed_data[key], cmap=cmap, vmin=vmin, vmax=vmax, alpha=alpha)
+            
+            # Title & Desc
+            title = self.get_layer_title(key, label)
+            ax_map.set_title(f"Overlay: {title}", fontsize=14)
+            ax_map.text(0.5, -0.02, desc, ha='center', transform=ax_map.transAxes, 
+                        fontsize=11, style='italic', backgroundcolor='#ffffffaa')
+            
+            # Colorbar (Right side of map axis)
+            plt.colorbar(im, ax=ax_map, fraction=0.03, pad=0.02, label=cb_label)
+        
+        elif key == 'rgb':
+             # Only RGB selected
+             title = self.get_layer_title('rgb', "RGB")
+             ax_map.set_title(title, fontsize=14)
+             ax_map.text(0.5, -0.02, "True color composite", ha='center', transform=ax_map.transAxes, 
+                        fontsize=11, style='italic', backgroundcolor='#ffffffaa')
+
         ax_map.axis('off')
-        
-        # Render Layers
-        # We render iteratively. Base layer first.
-        
-        # Store plot objects to update opacity later if needed (simple redraw is easier for now)
-        for key, label, default_alpha, cmap, vmin, vmax in self.layers_config:
-            state = self.layer_states[key]
-            if state['visible'] and key in self.processed_data:
-                # Alpha for the plot
-                alpha = state['alpha']
-                data = self.processed_data[key]
-                
-                # Special handling: if it's RGB, we don't use cmap/vmin/vmax usually, 
-                # but standard imshow logic applies
-                if key == 'rgb':
-                    ax_map.imshow(data, alpha=alpha)
-                else:
-                    ax_map.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax, alpha=alpha)
 
         # 2. Control Panel (Right Side)
-        # We manually place axes for controls relative to the map
         self.add_layer_controls()
 
         # 3. Rainfall/Weather (Bottom Row)
-        # Spans all columns (or just first 3 to align with map)
         self.draw_rainfall_row(gs, row_idx=4, col_span=4)
 
     def add_layer_controls(self):
-        """Adds toggle switches and sliders for layers in Overlay mode."""
-        start_y = 0.80
-        step_y = 0.08
+        """Adds RadioButtons for overlay selection and Slider for opacity."""
         
-        # Label
-        self.fig.text(0.77, 0.88, "Layer Controls", fontsize=12, fontweight='bold')
+        # --- 1. Overlay Selection (Radio) ---
+        # Get labels excluding RGB (base is implied)
+        overlay_choices = [item for item in self.layers_config if item[0] != 'rgb']
+        labels = [item[1] for item in overlay_choices]
+        keys = [item[0] for item in overlay_choices]
+        
+        # Find index of current active key
+        try:
+            active_idx = keys.index(self.active_overlay_key)
+        except ValueError:
+            active_idx = 0 # Default if rgb or invalid
+            self.active_overlay_key = keys[0]
 
-        for i, (key, label, _, _, _, _) in enumerate(self.layers_config):
-            y_pos = start_y - (i * step_y)
-            
-            # Checkbox for Visibility
-            # [left, bottom, width, height]
-            ax_check = self.fig.add_axes([0.77, y_pos, 0.08, 0.05], frameon=False)
-            check = CheckButtons(ax_check, [label], [self.layer_states[key]['visible']])
-            
-            # Slider for Opacity
-            ax_slider = self.fig.add_axes([0.86, y_pos + 0.01, 0.10, 0.03])
-            slider = Slider(ax_slider, '', 0.0, 1.0, valinit=self.layer_states[key]['alpha'], valfmt='%.1f')
-            
-            # Callbacks
-            # We need to capture 'key' in the closure. 
-            # In Python loops, lambda captures variable reference, not value. Use default arg or functools.partial.
-            
-            def on_check(label, k=key):
-                self.layer_states[k]['visible'] = not self.layer_states[k]['visible']
-                self.render() # Redraw full figure to apply order/alpha correctly
-            
-            def on_slider(val, k=key):
-                self.layer_states[k]['alpha'] = val
-                # Optimization: Could just update the specific artist alpha, but for MVP re-render is safer
-                # To implement "live" sliding, we'd need to store the image artists in a dictionary
-                # For now, let's redraw on release or just accept re-render lag
-                self.render()
+        self.fig.text(0.77, 0.88, "Select Overlay", fontsize=12, fontweight='bold')
+        
+        # Radio Axis
+        ax_radio = self.fig.add_axes([0.77, 0.35, 0.15, 0.50], facecolor='#f0f0f0')
+        radio = RadioButtons(ax_radio, labels, active=active_idx)
+        
+        def on_radio_click(label):
+            # Find key from label
+            idx = labels.index(label)
+            self.active_overlay_key = keys[idx]
+            self.render()
 
-            check.on_clicked(on_check)
-            slider.on_changed(on_slider)
-            
-            self.widgets[f'check_{key}'] = check
-            self.widgets[f'slider_{key}'] = slider
+        radio.on_clicked(on_radio_click)
+        self.widgets['overlay_radio'] = radio
+        
+        # --- 2. Opacity Slider (Single) ---
+        self.fig.text(0.77, 0.30, "Overlay Opacity", fontsize=10, fontweight='bold')
+        ax_slider = self.fig.add_axes([0.77, 0.27, 0.15, 0.02])
+        
+        current_alpha = self.layer_alphas.get(self.active_overlay_key, 0.5)
+        slider = Slider(ax_slider, '', 0.0, 1.0, valinit=current_alpha, valfmt='%.1f')
+        
+        def on_slider_change(val):
+            self.layer_alphas[self.active_overlay_key] = val
+            # For immediate feedback we could just update the artist, but full render handles colorbars cleanly
+            # We can optimize later if laggy.
+            # self.render() # CAUTION: Full render on slider drag is heavy.
+            pass 
+        
+        # Use simple update on release for performance, or update artist directly
+        # For now, let's update on release event (MouseUp) which Slider doesn't natively expose easily without event hooks
+        # Simplest: Update on change, but maybe throttle?
+        # Actually, matplotlib slider updates continuously. 
+        # Let's attach a separate 'update' call or just redraw.
+        
+        # Let's try direct artist update logic for smoothness
+        def on_slider_update(val):
+            self.layer_alphas[self.active_overlay_key] = val
+            # Trigger full re-render
+            self.render()
+
+        slider.on_changed(on_slider_update)
+        self.widgets['opacity_slider'] = slider
 
     def draw_rainfall_row(self, gs, row_idx, col_span=3):
         """Draws the rainfall and weather charts at the bottom."""
