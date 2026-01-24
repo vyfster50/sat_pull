@@ -1,0 +1,39 @@
+graph TD
+    %% Initial Trigger
+    Request[Incoming API Request: Lat/Long + Buffer] --> Auth{Auth & Metadata Check}
+
+    %% Data Acquisition Layer
+    subgraph "Parallel Data Retrieval (Async APIs)"
+        Auth -->|ee.ImageCollection| S2[Sentinel-2: Surface Reflectance]
+        Auth -->|ee.ImageCollection| L8[Landsat 8/9: Thermal B10]
+        Auth -->|ee.ImageCollection| S1[Sentinel-1: SAR Radar]
+        Auth -->|ee.ImageCollection| CH[CHIRPS: Rainfall Daily]
+        Auth -->|Static Asset| iSDA[iSDAsoil: 30m Properties]
+    end
+
+    %% Cloud Processing (Heavy Lifting)
+    subgraph "Server-Side Processing (GEE/Cloud)"
+        S2 --> Mask[Cloud & Shadow Masking: s2cloudless]
+        Mask --> NDVI[Calculate NDVI/NDRE Indices]
+        L8 --> LST[LST: DN to Celsius Transform]
+        S1 --> Smooth[Speckle Filtering & dB conversion]
+        CH --> Agg[10-Day Rainfall Accumulation]
+        
+        NDVI & LST & Smooth & Agg --> Reproject[Reproject to 10m UTM Grid]
+    end
+
+    %% Application Logic Layer
+    subgraph "Python Decision Engine"
+        Reproject --> Fusion[Multi-Stream Data Fusion]
+        iSDA -->|Fetch cached| Fusion
+        
+        Fusion --> Logic{Threshold Analysis}
+        Logic -->|Heat > 35C + Low NDVI| Stress[Result: Water Stress]
+        Logic -->|pH < 5.5| Acid[Result: Lime Needed]
+        Logic -->|Rain < 10mm| Drought[Result: Irrigation Alert]
+    end
+
+    %% Final Payload
+    Stress & Acid & Drought --> JSON[Final JSON Payload]
+    JSON --> Cache[(PostgreSQL/PostGIS Cache)]
+    JSON --> Response[HTTP 200: Data & Advice]
