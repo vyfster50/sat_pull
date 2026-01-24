@@ -1,4 +1,5 @@
 import os
+import argparse
 import requests
 # from pystac_client import Client # Removing pystac_client usage due to hangs
 import rasterio
@@ -447,16 +448,68 @@ def generate_response(processed_data, analysis_results, raw_data=None):
     plt.tight_layout()
     plt.show()
 
+def parse_args():
+    """Parse command-line arguments for location and zoom."""
+    parser = argparse.ArgumentParser(
+        description="Satellite-based Crop Monitoring Pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python extru_map.py --lat -28.74 --lon 29.37
+  python extru_map.py --lat -28.74 --lon 29.37 --buffer 0.1
+  python extru_map.py --lat -33.92 --lon 18.42 --buffer 0.02
+
+Buffer size guide (approximate area):
+  0.01 = ~1.1 km   (high zoom, very small area)
+  0.05 = ~5.5 km   (default, medium area)
+  0.1  = ~11 km    (low zoom, large area)
+  0.2  = ~22 km    (very wide area)
+        """
+    )
+    parser.add_argument(
+        "--lat", "-y", type=float, default=-28.736214289538538,
+        help="Latitude of the center point (default: -28.74, South Africa)"
+    )
+    parser.add_argument(
+        "--lon", "-x", type=float, default=29.365144005056933,
+        help="Longitude of the center point (default: 29.37, South Africa)"
+    )
+    parser.add_argument(
+        "--buffer", "-b", type=float, default=0.05,
+        help="Buffer size in degrees around the point (default: 0.05, ~5.5km)"
+    )
+    parser.add_argument(
+        "--start-date", "-s", type=str, default="2026-01-01",
+        help="Start date for data search (YYYY-MM-DD, default: 2026-01-01)"
+    )
+    parser.add_argument(
+        "--end-date", "-e", type=str, default="2026-01-24",
+        help="End date for data search (YYYY-MM-DD, default: 2026-01-24)"
+    )
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
     setup_environment()
     
-    # Standardized Inputs
-    LAT = -28.736214289538538
-    LON = 29.365144005056933
+    # Display configuration
+    print(f"\n{'='*50}")
+    print(f"SATELLITE CROP MONITORING ANALYSIS")
+    print(f"{'='*50}")
+    print(f"Location: ({args.lat:.6f}, {args.lon:.6f})")
+    print(f"Zoom Level (Buffer): {args.buffer}° (~{args.buffer * 111:.1f} km radius)")
+    print(f"Date Range: {args.start_date} to {args.end_date}")
+    print(f"{'='*50}\n")
     
     # 1. Data Acquisition
     print("Fetching data...")
-    raw_data = get_satellite_data(LAT, LON)
+    raw_data = get_satellite_data(
+        lat=args.lat,
+        lon=args.lon,
+        buffer=args.buffer,
+        start_date=args.start_date,
+        end_date=args.end_date
+    )
     
     # 2. Processing
     print("Processing indices...")
