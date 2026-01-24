@@ -190,7 +190,14 @@ class CropMonitorVisualizer:
         """Renders the Single Image Overlay view."""
         # Layout: Main Map (Top), Controls (Right/Side), Rainfall (Bottom)
         
-        gs = gridspec.GridSpec(5, 4, figure=self.fig, width_ratios=[1, 1, 1, 0.8], height_ratios=[1,1,1,1, 0.8])
+        # Adjusted GridSpec: 
+        # - Increased last column width ratio (1.2) for controls
+        # - Added explicit margins (top/bottom/left/right)
+        # - Added hspace=0.4 to prevent overlap between map and rainfall rows
+        gs = gridspec.GridSpec(5, 4, figure=self.fig, 
+                               width_ratios=[1, 1, 1, 1.2], 
+                               height_ratios=[1, 1, 1, 1, 0.8],
+                               top=0.90, bottom=0.05, left=0.05, right=0.95, hspace=0.4)
         
         # 1. Main Map Axis (Spans first 3 cols, first 4 rows)
         ax_map = self.fig.add_subplot(gs[0:4, 0:3])
@@ -216,7 +223,7 @@ class CropMonitorVisualizer:
             # Title & Desc
             title = self.get_layer_title(key, label)
             ax_map.set_title(f"Overlay: {title}", fontsize=14)
-            ax_map.text(0.5, -0.02, desc, ha='center', transform=ax_map.transAxes, 
+            ax_map.text(0.5, 0.02, desc, ha='center', va='bottom', transform=ax_map.transAxes, 
                         fontsize=11, style='italic', backgroundcolor='#ffffffaa')
             
             # Colorbar (Right side of map axis)
@@ -226,7 +233,7 @@ class CropMonitorVisualizer:
              # Only RGB selected
              title = self.get_layer_title('rgb', "RGB")
              ax_map.set_title(title, fontsize=14)
-             ax_map.text(0.5, -0.02, "True color composite", ha='center', transform=ax_map.transAxes, 
+             ax_map.text(0.5, 0.02, "True color composite", ha='center', va='bottom', transform=ax_map.transAxes, 
                         fontsize=11, style='italic', backgroundcolor='#ffffffaa')
 
         ax_map.axis('off')
@@ -253,10 +260,10 @@ class CropMonitorVisualizer:
             active_idx = 0 # Default if rgb or invalid
             self.active_overlay_key = keys[0]
 
-        self.fig.text(0.77, 0.88, "Select Overlay", fontsize=12, fontweight='bold')
+        self.fig.text(0.82, 0.88, "Select Overlay", fontsize=12, fontweight='bold')
         
         # Radio Axis
-        ax_radio = self.fig.add_axes([0.77, 0.35, 0.15, 0.50], facecolor='#f0f0f0')
+        ax_radio = self.fig.add_axes([0.82, 0.35, 0.15, 0.50], facecolor='#f0f0f0')
         radio = RadioButtons(ax_radio, labels, active=active_idx)
         
         def on_radio_click(label):
@@ -269,8 +276,8 @@ class CropMonitorVisualizer:
         self.widgets['overlay_radio'] = radio
         
         # --- 2. Opacity Slider (Single) ---
-        self.fig.text(0.77, 0.30, "Overlay Opacity", fontsize=10, fontweight='bold')
-        ax_slider = self.fig.add_axes([0.77, 0.27, 0.15, 0.02])
+        self.fig.text(0.82, 0.30, "Overlay Opacity", fontsize=10, fontweight='bold')
+        ax_slider = self.fig.add_axes([0.82, 0.27, 0.15, 0.02])
         
         current_alpha = self.layer_alphas.get(self.active_overlay_key, 0.5)
         slider = Slider(ax_slider, '', 0.0, 1.0, valinit=current_alpha, valfmt='%.1f')
