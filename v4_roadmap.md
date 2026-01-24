@@ -17,7 +17,7 @@ Building on the v3 foundation, v4 focuses on bridging the gap between basic moni
 ### A. Weather Intelligence (Priority 1)
 - [x] **7-Day Forecast:** Integrate Open-Meteo API.
 - [x] **Historical Weather:** Fetch past 5 days temp/rain for context.
-- [ ] **Visualization:** Line graphs for temp/rain trends.
+- [x] **Visualization:** Line graphs for temp/rain trends.
 
 ### B. Advanced Vegetation Indices (Priority 2)
 - [x] **EVI (Enhanced Vegetation Index):** $2.5 \cdot \frac{NIR - Red}{NIR + 6 \cdot Red - 7.5 \cdot Blue + 1}$
