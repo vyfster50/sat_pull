@@ -21,7 +21,7 @@ def setup_environment():
     os.environ['GDAL_DISABLE_READDIR_ON_OPEN'] = 'EMPTY_DIR'
 
 # ... search_stac ...
-def search_stac(collections, bbox, datetime=None, limit=1, query=None):
+def search_stac(collections, bbox, datetime=None, limit=1, query=None, sortby=None):
     """Helper to search STAC API using requests."""
     payload = {
         "collections": collections,
@@ -30,6 +30,8 @@ def search_stac(collections, bbox, datetime=None, limit=1, query=None):
     }
     if datetime:
         payload["datetime"] = datetime
+    if sortby:
+        payload["sortby"] = sortby
         
     try:
         response = requests.post(STAC_URL, json=payload, timeout=30)
@@ -70,8 +72,8 @@ def read_band(item, asset_key, bbox_wgs84, dtype="float32", out_shape=None):
             
         return data.astype(dtype)
 
-def get_satellite_data(lat, lon, buffer=0.05, start_date="2026-01-01", end_date="2026-01-24"):
-    """Fetches Sentinel-2 and Crop Mask data for the location."""
+def get_satellite_data(lat, lon, buffer=0.05):
+    """Fetches latest satellite data for the location."""
     # catalog = Client.open(STAC_URL) # Removed
     bbox = get_bbox(lat, lon, buffer)
     
@@ -85,13 +87,13 @@ def get_satellite_data(lat, lon, buffer=0.05, start_date="2026-01-01", end_date=
         "soil": None
     }
 
-    # 1. Get Sentinel-2 Data
+    # 1. Get Sentinel-2 Data (latest available)
     print("Searching for Sentinel-2 data...")
     items_s2 = search_stac(
         collections=["s2_l2a"],
         bbox=bbox,
-        datetime=f"{start_date}/{end_date}",
-        limit=1
+        limit=1,
+        sortby=[{"field": "datetime", "direction": "desc"}]
     )
     
     # Reference shape (will be set by S2 Red band)
@@ -118,18 +120,17 @@ def get_satellite_data(lat, lon, buffer=0.05, start_date="2026-01-01", end_date=
             "metadata": item_s2
         }
     
-    # 2. Get Landsat 8/9 Data (LST)
+    # 2. Get Landsat 8/9 Data (LST) - latest available
     print("Searching for Landsat data...")
     try:
-        # Note: Using client-side sort for clouds
         items_ls = search_stac(
             collections=["ls9_st"],
             bbox=bbox,
-            datetime=f"{start_date}/{end_date}",
-            limit=10 
+            limit=10,
+            sortby=[{"field": "datetime", "direction": "desc"}]
         )
         if items_ls:
-            # Sort by cloud cover (lowest first)
+            # From latest 10, pick lowest cloud cover
             items_ls.sort(key=lambda x: x['properties'].get("eo:cloud_cover", 100))
             item_ls = items_ls[0]
             
@@ -145,13 +146,13 @@ def get_satellite_data(lat, lon, buffer=0.05, start_date="2026-01-01", end_date=
         print(f"Error fetching Landsat data: {e}")
         data["landsat"] = None
 
-    # 3. Get Sentinel-1 Data (Radar)
+    # 3. Get Sentinel-1 Data (Radar) - latest available
     print("Searching for Sentinel-1 data...")
     items_s1 = search_stac(
         collections=["s1_rtc"],
         bbox=bbox,
-        datetime=f"{start_date}/{end_date}",
-        limit=1
+        limit=1,
+        sortby=[{"field": "datetime", "direction": "desc"}]
     )
     if items_s1:
         item_s1 = items_s1[0]
@@ -165,17 +166,15 @@ def get_satellite_data(lat, lon, buffer=0.05, start_date="2026-01-01", end_date=
         print("No Sentinel-1 data found.")
         data["s1"] = None
 
-    # 4. Get Rainfall Data (CHIRPS)
+    # 4. Get Rainfall Data (CHIRPS) - latest available
     print("Searching for Rainfall data...")
-    # Rainfall might have latency, so search a bit further back
     items_rain = search_stac(
         collections=["rainfall_chirps_daily"],
         bbox=bbox,
-        datetime="2025-12-01/2026-01-24",
-        limit=5 
+        limit=1,
+        sortby=[{"field": "datetime", "direction": "desc"}]
     )
     if items_rain:
-        print(f"Found {len(items_rain)} Rainfall scenes")
         item_rain = items_rain[0]
         data["rain"] = {
             "daily": read_band(item_rain, "rainfall", bbox, out_shape=ref_shape),
@@ -398,6 +397,8 @@ def generate_response(processed_data, analysis_results, raw_data=None):
     if "rgb" in processed_data:
         ax[0, 0].imshow(processed_data["rgb"])
         ax[0, 0].set_title(f"Sentinel-2 RGB\n{date_s2}")
+    ax[0, 0].text(0.5, -0.05, "True color composite", ha='center', transform=ax[0, 0].transAxes, 
+                  fontsize=9, style='italic', color='gray')
     ax[0, 0].axis("off")
     
     # 2. Plot NDVI
@@ -405,6 +406,8 @@ def generate_response(processed_data, analysis_results, raw_data=None):
         im_ndvi = ax[0, 1].imshow(processed_data["ndvi"], cmap='RdYlGn', vmin=-0.2, vmax=0.8)
         ax[0, 1].set_title(f"NDVI (Veg. Health)\n{date_s2}")
         plt.colorbar(im_ndvi, ax=ax[0, 1], fraction=0.046, pad=0.04)
+    ax[0, 1].text(0.5, -0.05, "Green=healthy (>0.5) | Yellow=stressed (<0.3)", ha='center', 
+                  transform=ax[0, 1].transAxes, fontsize=9, style='italic', color='gray')
     ax[0, 1].axis("off")
 
     # 3. Plot Crop Mask
@@ -415,6 +418,8 @@ def generate_response(processed_data, analysis_results, raw_data=None):
         ax[0, 2].set_title(f"Crop Mask (Yellow)\n{date_lc}")
     else:
         ax[0, 2].text(0.5, 0.5, "Land Cover Not Available", ha='center')
+    ax[0, 2].text(0.5, -0.05, "Yellow=cropland | Gray=other land cover", ha='center', 
+                  transform=ax[0, 2].transAxes, fontsize=9, style='italic', color='gray')
     ax[0, 2].axis("off")
 
     # 4. Plot LST
@@ -424,6 +429,8 @@ def generate_response(processed_data, analysis_results, raw_data=None):
         plt.colorbar(im_lst, ax=ax[1, 0], fraction=0.046, pad=0.04)
     else:
         ax[1, 0].text(0.5, 0.5, "LST Not Available", ha='center')
+    ax[1, 0].text(0.5, -0.05, "Dark=cooler | Bright=hotter (>35°C=stress)", ha='center', 
+                  transform=ax[1, 0].transAxes, fontsize=9, style='italic', color='gray')
     ax[1, 0].axis("off")
 
     # 5. Plot Sentinel-1 VV
@@ -433,6 +440,8 @@ def generate_response(processed_data, analysis_results, raw_data=None):
         plt.colorbar(im_s1, ax=ax[1, 1], fraction=0.046, pad=0.04)
     else:
         ax[1, 1].text(0.5, 0.5, "Radar Not Available", ha='center')
+    ax[1, 1].text(0.5, -0.05, "Bright=rough/wet | Dark=smooth/dry", ha='center', 
+                  transform=ax[1, 1].transAxes, fontsize=9, style='italic', color='gray')
     ax[1, 1].axis("off")
 
     # 6. Plot Rainfall
@@ -442,6 +451,8 @@ def generate_response(processed_data, analysis_results, raw_data=None):
         plt.colorbar(im_rain, ax=ax[1, 2], fraction=0.046, pad=0.04)
     else:
         ax[1, 2].text(0.5, 0.5, "Rainfall Not Available", ha='center')
+    ax[1, 2].text(0.5, -0.05, "Dark blue=heavy rain | Light=low (<1mm=alert)", ha='center', 
+                  transform=ax[1, 2].transAxes, fontsize=9, style='italic', color='gray')
     ax[1, 2].axis("off")
 
     plt.tight_layout()
@@ -510,17 +521,13 @@ def main():
     # Interactive input
     lat, lon, buffer = get_interactive_input()
     
-    # Date range (fixed for now)
-    start_date = "2026-01-01"
-    end_date = "2026-01-24"
-    
     # Display configuration
     print(f"\n{'='*50}")
     print(f"CONFIGURATION")
     print(f"{'='*50}")
     print(f"Location: {lat}, {lon}")
     print(f"Resolution: {buffer}° (~{buffer * 111:.1f} km radius)")
-    print(f"Date Range: {start_date} to {end_date}")
+    print(f"Mode: Fetching latest available data from all sources")
     print(f"{'='*50}\n")
     
     # 1. Data Acquisition
@@ -528,9 +535,7 @@ def main():
     raw_data = get_satellite_data(
         lat=lat,
         lon=lon,
-        buffer=buffer,
-        start_date=start_date,
-        end_date=end_date
+        buffer=buffer
     )
     
     # 2. Processing
