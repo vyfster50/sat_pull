@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """Test script for Phase 2 pipeline debugging."""
 
-import extru_map
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+
+from sat_mon.config import setup_environment
+from sat_mon.data.composite import get_satellite_data
+from sat_mon.processing.indices import process_indices
+from sat_mon.analysis.alerts import analyze_thresholds
+
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 
-extru_map.setup_environment()
+setup_environment()
 
 lat, lon, buffer = -28.736214289538538, 29.365144005056933, 0.05
 
@@ -15,14 +23,14 @@ print()
 
 # 1. Data Acquisition
 print('1. Data Acquisition...')
-data = extru_map.get_satellite_data(lat, lon, buffer)
+data = get_satellite_data(lat, lon, buffer)
 print('   ✓ Complete')
 
 # 2. Processing (includes Phase 2 functions)
 print()
 print('2. Processing Pipeline (Phase 2)...')
 try:
-    processed = extru_map.process_indices(data)
+    processed = process_indices(data)
     print(f'   Processed keys: {list(processed.keys())}')
     
     # Check Phase 2 outputs
@@ -41,7 +49,7 @@ except Exception as e:
 print()
 print('3. Alert Analysis...')
 try:
-    analysis = extru_map.analyze_thresholds(processed)
+    analysis = analyze_thresholds(processed)
     print(f'   Stats: {analysis["stats"]}')
     print(f'   Alerts: {len(analysis["alerts"])} active')
     for alert in analysis['alerts']:

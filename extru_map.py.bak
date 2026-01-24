@@ -1,18 +1,19 @@
 """
-Crop Monitoring App v3 - Main Processing Pipeline
+Crop Monitoring App v4 - Main Processing Pipeline
 ================================================
 
-Status: Phase 2 (Processing Pipeline) ✅ COMPLETE
+Status: v4 Phase 1 (Data Expansion) ✅ COMPLETE
 
-Phase 1: Data Acquisition ✅
-- All STAC collections fetching (S2, Landsat, S1, CHIRPS, WaPOR, etc.)
-- 30-day rainfall stacking ready
-- NDVI fallback logic for cloudy S2
+v4 Phase 1: Data Source Expansion ✅
+- [x] Weather Intelligence: Open-Meteo integration (Forecast/History)
+- [x] Sentinel-2: Added B11 (SWIR) for moisture indices
+- [x] Evapotranspiration: Integrated IWMI Green ET (WaPOR alternative)
 
-Phase 2: Processing Pipeline ✅
-- [x] Rainfall accumulation (7d, 30d sums) - process_rainfall_accumulation()
-- [x] LST baseline computation - compute_lst_baseline()
-- [x] Flood threshold detection - compute_flood_mask()
+v3 Phase 2: Processing Pipeline ✅ (Legacy)
+- [x] Rainfall accumulation (7d, 30d sums)
+- [x] LST baseline computation
+- [x] Flood threshold detection
+
 - [x] NDVI source switching logic - Already in get_satellite_data()
 - [x] Updated 3×3 visualization grid
 - [x] Enhanced alert rules from v3 roadmap
@@ -82,6 +83,37 @@ def get_bbox(lat, lon, buffer=0.05):
         lat + buffer,
     ]
 
+def get_weather_forecast(lat, lon):
+    """Fetches 7-day forecast and 5-day historical weather from Open-Meteo."""
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
+        "past_days": 5,
+        "forecast_days": 7,
+        "timezone": "auto"
+    }
+    
+    try:
+        print("Fetching Weather data from Open-Meteo...")
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Structure for easy plotting
+        weather = {
+            "dates": data["daily"]["time"],
+            "temp_max": data["daily"]["temperature_2m_max"],
+            "temp_min": data["daily"]["temperature_2m_min"],
+            "precip": data["daily"]["precipitation_sum"]
+        }
+        print(f"  Fetched {len(weather['dates'])} days of weather data")
+        return weather
+    except Exception as e:
+        print(f"  Error fetching weather data: {e}")
+        return None
+
 def read_band(item, asset_key, bbox_wgs84, dtype="float32", out_shape=None):
     """Reads a specific band from a STAC item (dict) within a bounding box."""
     # Handle item as dict or pystac Item
@@ -118,8 +150,13 @@ def get_satellite_data(lat, lon, buffer=0.05):
         "rain": None,
         "soil": None,
         "soil_moisture": None,
+        "et": None,  # Added for Evapotranspiration
+        "weather": None,  # Added for Open-Meteo
         "ndvi_source": None
     }
+
+    # 0. Get Weather Data (Open-Meteo)
+    data["weather"] = get_weather_forecast(lat, lon)
 
     # 1. Get Sentinel-2 Data (latest available)
     print("Searching for Sentinel-2 data...")
@@ -149,6 +186,7 @@ def get_satellite_data(lat, lon, buffer=0.05):
             "green": read_band(item_s2, "B03", bbox, out_shape=ref_shape),
             "blue": read_band(item_s2, "B02", bbox, out_shape=ref_shape),
             "nir": read_band(item_s2, "B08", bbox, out_shape=ref_shape),
+            "swir": read_band(item_s2, "B11", bbox, out_shape=ref_shape), # Added B11 (SWIR)
             "red_edge": read_band(item_s2, "B05", bbox, out_shape=ref_shape),
             "scl": read_band(item_s2, "SCL", bbox, dtype="uint8", out_shape=ref_shape),
             "metadata": item_s2
@@ -305,6 +343,31 @@ def get_satellite_data(lat, lon, buffer=0.05):
         print("No Soil Moisture data found.")
         data["soil_moisture"] = None
         
+    # 5b. Get WaPOR Evapotranspiration Data (IWMI Monthly)
+    print("Searching for Evapotranspiration (IWMI/WaPOR)...")
+    items_et = search_stac(
+        collections=["iwmi_green_et_monthly"],
+        bbox=bbox,
+        limit=1,
+        sortby=[{"field": "datetime", "direction": "desc"}]
+    )
+    if items_et:
+        item_et = items_et[0]
+        print(f"ET Scene: {item_et['id']}")
+        try:
+            # Asset key for IWMI monthly is 'data'
+            et_data = read_band(item_et, "data", bbox, out_shape=ref_shape)
+            data["et"] = {
+                "et": et_data,
+                "metadata": item_et
+            }
+        except Exception as e:
+            print(f"  Error reading ET: {e}")
+            data["et"] = None
+    else:
+        print("No ET data found.")
+        data["et"] = None
+
     # 6. Get iSDAsoil Data (Carbon)
     print("Searching for Soil Carbon data...")
     items_soil = search_stac(
@@ -719,6 +782,34 @@ def analyze_thresholds(metrics):
 
     return results
 
+def print_weather_forecast(weather_data):
+    """Prints the 7-day weather forecast."""
+    if not weather_data or "dates" not in weather_data or "precip" not in weather_data:
+        return
+
+    print("\n--- 7-DAY WEATHER FORECAST ---")
+    print(f"{'Date':<12} | {'Rain (mm)':<10} | {'Temp (°C)':<15}")
+    print("-" * 45)
+    
+    w = weather_data
+    num_days = len(w["dates"])
+    # Show last 7 days (forecast)
+    start_idx = max(0, num_days - 7)
+    
+    for i in range(start_idx, num_days):
+        date = w["dates"][i]
+        rain = w["precip"][i]
+        t_min = w["temp_min"][i]
+        t_max = w["temp_max"][i]
+        
+        # Highlight significant rain
+        rain_str = f"{rain:.1f}"
+        if rain > 5:
+            rain_str += " 💧"
+        
+        print(f"{date:<12} | {rain_str:<10} | {t_min:.1f} - {t_max:.1f}")
+    print("------------------------------")
+
 def generate_response(processed_data, analysis_results, raw_data=None):
     """Visualizes the processed data."""
     
@@ -754,6 +845,10 @@ def generate_response(processed_data, analysis_results, raw_data=None):
     print(f"Risk Score: {risk_score}/100")
     print(f"Risk Level: {risk_level}")
     print("---------------------------------")
+    
+    # Display Weather Forecast (v4 Feature)
+    if raw_data and raw_data.get("weather"):
+        print_weather_forecast(raw_data["weather"])
     
     if analysis_results["alerts"]:
         # Sort alerts by severity for display (High -> Medium -> Info)
