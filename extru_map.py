@@ -413,7 +413,9 @@ def process_indices(data):
 
     # Process Soil Moisture (WaPOR)
     if data.get("soil_moisture"):
-        processed["soil_moisture"] = data["soil_moisture"]["relative"]
+        # WaPOR values are often scaled (e.g. 0-1000 for 0-100%)
+        # Debugging showed range 500-1000, confirming 0.1 scale factor needed
+        processed["soil_moisture"] = data["soil_moisture"]["relative"] * 0.1
 
     # Process Crop Mask
     if data.get("crop_mask") is not None:
