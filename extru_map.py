@@ -1,5 +1,4 @@
 import os
-import argparse
 import requests
 # from pystac_client import Client # Removing pystac_client usage due to hangs
 import rasterio
@@ -448,67 +447,90 @@ def generate_response(processed_data, analysis_results, raw_data=None):
     plt.tight_layout()
     plt.show()
 
-def parse_args():
-    """Parse command-line arguments for location and zoom."""
-    parser = argparse.ArgumentParser(
-        description="Satellite-based Crop Monitoring Pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python extru_map.py --lat -28.74 --lon 29.37
-  python extru_map.py --lat -28.74 --lon 29.37 --buffer 0.1
-  python extru_map.py --lat -33.92 --lon 18.42 --buffer 0.02
-
-Buffer size guide (approximate area):
-  0.01 = ~1.1 km   (high zoom, very small area)
-  0.05 = ~5.5 km   (default, medium area)
-  0.1  = ~11 km    (low zoom, large area)
-  0.2  = ~22 km    (very wide area)
-        """
-    )
-    parser.add_argument(
-        "--lat", "-y", type=float, default=-28.736214289538538,
-        help="Latitude of the center point (default: -28.74, South Africa)"
-    )
-    parser.add_argument(
-        "--lon", "-x", type=float, default=29.365144005056933,
-        help="Longitude of the center point (default: 29.37, South Africa)"
-    )
-    parser.add_argument(
-        "--buffer", "-b", type=float, default=0.05,
-        help="Buffer size in degrees around the point (default: 0.05, ~5.5km)"
-    )
-    parser.add_argument(
-        "--start-date", "-s", type=str, default="2026-01-01",
-        help="Start date for data search (YYYY-MM-DD, default: 2026-01-01)"
-    )
-    parser.add_argument(
-        "--end-date", "-e", type=str, default="2026-01-24",
-        help="End date for data search (YYYY-MM-DD, default: 2026-01-24)"
-    )
-    return parser.parse_args()
+def get_interactive_input():
+    """Get location and resolution interactively from user."""
+    print(f"\n{'='*50}")
+    print("SATELLITE CROP MONITORING ANALYSIS")
+    print(f"{'='*50}\n")
+    
+    # Default values
+    default_lat = -28.736214289538538
+    default_lon = 29.365144005056933
+    default_buffer = 0.05
+    
+    # Get position
+    print("Enter position as: lat, lon")
+    print(f"Example: -28.734724030406774, 29.36506872445845")
+    print(f"(Press Enter for default: {default_lat}, {default_lon})")
+    position_input = input("\nPosition: ").strip()
+    
+    if position_input:
+        try:
+            parts = position_input.split(",")
+            lat = float(parts[0].strip())
+            lon = float(parts[1].strip())
+        except (ValueError, IndexError):
+            print("Invalid format. Using default position.")
+            lat, lon = default_lat, default_lon
+    else:
+        lat, lon = default_lat, default_lon
+    
+    # Get resolution/buffer
+    print("\nResolution (buffer size in degrees):")
+    print("  1 = ~1.1 km  (high zoom, small area)")
+    print("  2 = ~5.5 km  (medium area) [default]")
+    print("  3 = ~11 km   (large area)")
+    print("  4 = ~22 km   (very wide area)")
+    print("  Or enter custom value (e.g., 0.03)")
+    res_input = input("\nResolution [1-4 or custom]: ").strip()
+    
+    buffer_map = {
+        "1": 0.01,
+        "2": 0.05,
+        "3": 0.1,
+        "4": 0.2
+    }
+    
+    if not res_input:
+        buffer = default_buffer
+    elif res_input in buffer_map:
+        buffer = buffer_map[res_input]
+    else:
+        try:
+            buffer = float(res_input)
+        except ValueError:
+            print("Invalid input. Using default resolution.")
+            buffer = default_buffer
+    
+    return lat, lon, buffer
 
 def main():
-    args = parse_args()
     setup_environment()
+    
+    # Interactive input
+    lat, lon, buffer = get_interactive_input()
+    
+    # Date range (fixed for now)
+    start_date = "2026-01-01"
+    end_date = "2026-01-24"
     
     # Display configuration
     print(f"\n{'='*50}")
-    print(f"SATELLITE CROP MONITORING ANALYSIS")
+    print(f"CONFIGURATION")
     print(f"{'='*50}")
-    print(f"Location: ({args.lat:.6f}, {args.lon:.6f})")
-    print(f"Zoom Level (Buffer): {args.buffer}° (~{args.buffer * 111:.1f} km radius)")
-    print(f"Date Range: {args.start_date} to {args.end_date}")
+    print(f"Location: {lat}, {lon}")
+    print(f"Resolution: {buffer}° (~{buffer * 111:.1f} km radius)")
+    print(f"Date Range: {start_date} to {end_date}")
     print(f"{'='*50}\n")
     
     # 1. Data Acquisition
     print("Fetching data...")
     raw_data = get_satellite_data(
-        lat=args.lat,
-        lon=args.lon,
-        buffer=args.buffer,
-        start_date=args.start_date,
-        end_date=args.end_date
+        lat=lat,
+        lon=lon,
+        buffer=buffer,
+        start_date=start_date,
+        end_date=end_date
     )
     
     # 2. Processing
