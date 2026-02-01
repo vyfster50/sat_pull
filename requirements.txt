@@ -1,9 +1,10 @@
-requests
+requests>=2.25.0
 rasterio
-numpy
-matplotlib
+numpy>=1.21.0
+matplotlib>=3.5.0
 pystac
-contextily
+pystac-client>=0.5.0
+contextily>=1.2.0
 requests-cache
 shapely>=2.0.0
-pyproj
+pyproj>=3.0.0
