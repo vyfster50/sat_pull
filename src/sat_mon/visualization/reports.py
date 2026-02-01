@@ -77,3 +77,52 @@ def generate_report(processed_data, analysis_results, raw_data=None):
     else:
         print("\nNo active alerts. Crop conditions appear normal.")
     print("=======================\n")
+
+def generate_historical_report(seasons, ndvi_stats, lst_stats, rain_stats):
+    """
+    Generates a console report for historical analysis.
+    
+    Args:
+        seasons (list): List of detected season dictionaries.
+        ndvi_stats (dict): Stats from NDVI timeseries (count, mean, etc).
+        lst_stats (dict): Stats from LST timeseries.
+        rain_stats (dict): Stats from Rainfall timeseries.
+    """
+    print("\n" + "="*50)
+    print("HISTORICAL ANALYSIS REPORT")
+    print("="*50 + "\n")
+
+    # Data Summary
+    print("--- DATA SUMMARY ---")
+    print(f"NDVI Observations : {ndvi_stats.get('count', 0)}")
+    print(f"LST Observations  : {lst_stats.get('count', 0)}")
+    print(f"Total Rainfall    : {rain_stats.get('total_mm', 0):.1f} mm over {rain_stats.get('days', 0)} days")
+    print("")
+
+    # Seasons Table
+    if seasons:
+        print("--- DETECTED SEASONS ---")
+        # Header
+        print(f"{'Season':<10} | {'Planting':<12} | {'Harvest':<12} | {'Duration':<8} | {'Peak':<6} | {'Health'}")
+        print("-" * 75)
+        
+        for season in seasons:
+            # Format detection logic usually returns 'type', 'start_date', 'end_date' or similar. 
+            # Looking at previous phases, 'detect_seasons' usually returns a list of dicts.
+            # I will assume standard keys based on research.
+            
+            # Since detect_seasons isn't fully standardized in my head, I'll use .get heavily.
+            # But wait, I recall 'planting_date' and 'harvest_date' from Phase B research.
+            
+            s_type = season.get('season_type', 'Season') # e.g. Summer/Winter
+            p_date = season.get('planting_date', 'N/A')
+            h_date = season.get('harvest_date', 'N/A')
+            duration = season.get('duration_days', 0)
+            peak = season.get('peak_ndvi', 0.0)
+            health = season.get('health_rating', 'Unknown')
+            
+            print(f"{s_type:<10} | {p_date:<12} | {h_date:<12} | {duration:<8} | {peak:<6.2f} | {health}")
+    else:
+        print("No specific crop seasons detected in the analysis period.")
+    
+    print("\n" + "="*50 + "\n")

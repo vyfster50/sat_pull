@@ -64,54 +64,73 @@ def fetch_timeseries(
     datetime_range = f"{start_date}/{end_date}"
     
     all_items = []
-    page = 1
+    seen_dates = set()  # Track unique dates for early termination
+    offset = 0
     page_size = 100  # STAC API typically limits to 100 items per request
+    
+    # Estimate expected unique dates from date range
+    from datetime import datetime as dt
+    start_dt = dt.strptime(start_date, '%Y-%m-%d')
+    end_dt = dt.strptime(end_date, '%Y-%m-%d')
+    expected_days = (end_dt - start_dt).days + 1
     
     while True:
         if progress_callback:
-            progress_callback(page, len(all_items), f"Fetching page {page}...")
-        
-        # Build query with cloud cover filter for optical collections
-        query = None
-        if any(c in ["s2_l2a", "ls9_sr", "ls8_sr"] for c in collections):
-            query = {
-                "eo:cloud_cover": {"lte": max_cloud_cover}
-            }
+            progress_callback(offset // page_size + 1, len(all_items), f"Fetching from offset {offset}...")
         
         try:
+            # Note: DE Africa STAC uses _o for offset-based pagination
             items = _search_stac_paginated(
                 collections=collections,
                 bbox=bbox,
                 datetime=datetime_range,
                 limit=page_size,
-                query=query,
-                sortby=[{"field": "datetime", "direction": "asc"}]
+                offset=offset
             )
         except Exception as e:
-            print(f"[fetch_timeseries] Error on page {page}: {e}")
+            print(f"[fetch_timeseries] Error at offset {offset}: {e}")
             break
         
         if not items:
             break
+        
+        # Track unique dates from this page
+        for item in items:
+            props = item.get('properties', {})
+            date_str = props.get('start_datetime') or props.get('datetime')
+            if date_str:
+                date_only = date_str[:10]  # YYYY-MM-DD
+                seen_dates.add(date_only)
             
         all_items.extend(items)
         
         # Check if we got fewer items than page_size (last page)
         if len(items) < page_size:
             break
-            
-        page += 1
         
-        # Safety limit to prevent infinite loops
-        if page > 100:
-            print("[fetch_timeseries] Warning: Hit page limit (100 pages)")
+        # Early termination: if we have 90%+ of expected dates, stop fetching
+        # This prevents fetching thousands of duplicate tiles for global datasets
+        if len(seen_dates) >= expected_days * 0.9:
+            print(f"[fetch_timeseries] Early stop: {len(seen_dates)} unique dates (target: {expected_days})")
+            break
+            
+        offset += page_size
+        
+        # Safety limit to prevent infinite loops (10000 items max)
+        if offset >= 10000:
+            print("[fetch_timeseries] Warning: Hit item limit (10000)")
             break
     
     # Convert to SceneResult tuples with parsed dates
     results = []
     for item in all_items:
         try:
-            date_str = item['properties']['datetime']
+            # Use start_datetime if available (e.g., CHIRPS), otherwise datetime
+            props = item['properties']
+            date_str = props.get('start_datetime') or props.get('datetime')
+            if not date_str:
+                print(f"[fetch_timeseries] Skipping item with no datetime")
+                continue
             # Parse ISO datetime string
             if 'T' in date_str:
                 scene_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
@@ -121,6 +140,41 @@ def fetch_timeseries(
         except (KeyError, ValueError) as e:
             print(f"[fetch_timeseries] Skipping item with invalid date: {e}")
             continue
+    
+    # Client-side cloud filtering for optical collections
+    is_optical = any(c in ["s2_l2a", "ls9_sr", "ls8_sr", "ls9_st", "ls8_st"] for c in collections)
+    if is_optical and max_cloud_cover < 100:
+        before_filter = len(results)
+        results = [
+            r for r in results 
+            if r.item.get('properties', {}).get('eo:cloud_cover', 0) <= max_cloud_cover
+        ]
+        print(f"[fetch_timeseries] Cloud filter: {before_filter} -> {len(results)} scenes (max {max_cloud_cover}%)")
+    
+    # Deduplicate by calendar date (keep best scene per day)
+    # For optical: prefer lowest cloud cover. For others: keep first.
+    from collections import defaultdict
+    scenes_by_date = defaultdict(list)
+    for scene in results:
+        date_key = scene.date.date()  # Calendar date only
+        scenes_by_date[date_key].append(scene)
+    
+    deduplicated = []
+    for date_key in sorted(scenes_by_date.keys()):
+        candidates = scenes_by_date[date_key]
+        if len(candidates) == 1:
+            deduplicated.append(candidates[0])
+        else:
+            # Multiple scenes for same date - pick best one
+            if is_optical:
+                # Sort by cloud cover (lowest first), pick first
+                candidates.sort(key=lambda s: s.item.get('properties', {}).get('eo:cloud_cover', 100))
+            deduplicated.append(candidates[0])
+    
+    if len(results) != len(deduplicated):
+        print(f"[fetch_timeseries] Deduplicated: {len(results)} -> {len(deduplicated)} scenes (1 per day)")
+    
+    results = deduplicated
     
     # Sort by date (should already be sorted, but ensure)
     results.sort(key=lambda x: x.date)
@@ -137,19 +191,22 @@ def _search_stac_paginated(
     bbox: List[float],
     datetime: str = None,
     limit: int = 100,
+    offset: int = 0,
     query: dict = None,
     sortby: List[dict] = None
 ) -> List[dict]:
     """
     Internal helper for paginated STAC search with query support.
     
-    This extends the basic search_stac with proper query parameter handling.
+    Uses _o parameter for offset-based pagination (DE Africa STAC).
     """
     payload = {
         "collections": collections,
         "bbox": bbox,
         "limit": limit
     }
+    if offset > 0:
+        payload["_o"] = offset  # DE Africa STAC offset parameter
     if datetime:
         payload["datetime"] = datetime
     if sortby:
@@ -166,6 +223,12 @@ def _search_stac_paginated(
         return []
     except requests.exceptions.RequestException as e:
         print(f"[_search_stac_paginated] Request error: {e}")
+        # Try to get more details from response body
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                print(f"[_search_stac_paginated] Response body: {e.response.text[:500]}")
+            except:
+                pass
         return []
     except Exception as e:
         print(f"[_search_stac_paginated] Unexpected error: {e}")
@@ -839,8 +902,11 @@ def fetch_rainfall_timeseries(
     print(f"[fetch_rainfall_timeseries] Starting for ({lat}, {lon})")
     
     boundary = create_circular_boundary(lat, lon, radius_m)
-    buffer_degrees = (radius_m / 111000.0) * 3.0  # Larger buffer for CHIRPS ~5km resolution
+    # CHIRPS has ~0.05 degree (~5km) resolution - use small bbox to minimize duplicate tiles
+    # A 0.025° buffer ensures we hit the pixel containing the point without fetching many tiles
+    buffer_degrees = 0.025
     bbox = get_bbox(lat, lon, buffer_degrees)
+    print(f"[fetch_rainfall_timeseries] Using buffer={buffer_degrees}°, bbox={bbox}")
     
     # Fetch CHIRPS scenes (no cloud filter needed)
     scenes = fetch_timeseries(
@@ -868,10 +934,26 @@ def fetch_rainfall_timeseries(
     try:
         ref_band = read_band(ref_item, 'rainfall', bbox)
         ref_shape = ref_band.shape
-    except Exception:
+        # Validate shape has non-zero dimensions
+        if ref_shape[0] == 0 or ref_shape[1] == 0:
+            print(f"[fetch_rainfall_timeseries] Invalid ref_shape {ref_shape}, using default")
+            ref_shape = (64, 64)
+    except Exception as e:
+        print(f"[fetch_rainfall_timeseries] Could not read ref band: {e}")
         ref_shape = (64, 64)  # CHIRPS is lower resolution
     
     field_mask = create_field_mask(boundary, ref_shape, bbox, epsg=4326)
+    mask_pixels = np.sum(field_mask)
+    print(f"[fetch_rainfall_timeseries] Field mask pixels: {mask_pixels}, ref_shape: {ref_shape}")
+    
+    # Check if field is too small for CHIRPS resolution
+    if not np.any(field_mask):
+        print(f"[fetch_rainfall_timeseries] Warning: Field too small for CHIRPS resolution (~5km). "
+              f"Using nearest pixel instead.")
+        # Use center pixel as fallback
+        center_row, center_col = ref_shape[0] // 2, ref_shape[1] // 2
+        field_mask = np.zeros(ref_shape, dtype=bool)
+        field_mask[center_row, center_col] = True
     
     # Extract rainfall values
     points = extract_field_values(

@@ -2,8 +2,8 @@
 
 **Created**: 2026-02-01  
 **Last Updated**: 2026-02-01  
-**Status**: In Progress (Phases A+B Complete)  
-**Progress**: 40% (2/5 phases)
+**Status**: Complete (Phases A-E Complete)
+**Progress**: 100% (5/5 phases)
 
 ## 1. Overview
 
@@ -252,10 +252,10 @@ def run_historical_analysis():
 
 ## 5. Execution Plan
 
-### Overall Progress: 4/5 Phases Complete (80%)
+### Overall Progress: 5/5 Phases Complete (100%)
 
 ```
-[███████████████████░░░] 80%
+[████████████████████████] 100%
 ```
 
 | Phase | Task | Effort | Status | Completed | Tested |
@@ -264,7 +264,7 @@ def run_historical_analysis():
 | B | Historical data fetching | 1–2 days | ✅ Done | 2026-02-01 | ✅ Pass |
 | C | Phenology detection | 1 day | ✅ Done | 2026-02-01 | ✅ Pass |
 | D | Time series visualization | 1 day | ✅ Done | 2026-02-01 | ✅ Pass |
-| E | CLI integration | 0.5 day | 🔲 Next | — | — |
+| E | CLI integration | 0.5 day | ✅ Done | 2026-02-01 | ✅ Pass |
 
 ### Phase A Deliverables ✅
 - [x] `src/sat_mon/analysis/field_boundary.py` — 6 functions
@@ -320,14 +320,19 @@ def run_historical_analysis():
 - [x] Integration test: `test_phase_d.py` — End-to-end plot generation
 - [x] Performance: ~317ms for 1000 data points (4 panels)
 
-### Phase E Deliverables 🔲
-- [ ] CLI flag `--historical`
-- [ ] Interactive field definition
-- [ ] Report generation
+### Phase E Deliverables ✅
+- [x] CLI flag `--historical` — added to `app.py`
+- [x] `parse_arguments()` — `argparse` integration with radius/dates/lat/lon
+- [x] Interactive field definition — `get_historical_input()`
+- [x] Report generation — `generate_historical_report()` in `reports.py`
+- [x] `run_historical_analysis()` — Orchestrator linking fetch → detect → plot
+- [x] Integration test: `test_phase_e.py` — verified CLI arg parsing and mocked pipeline
+- [x] Progress feedback — console status updates during long fetches
+- [x] Data alignment — Handles varying sensor frequencies (daily/5-day/16-day)
 
 **Total estimated effort**: 4.5–5.5 days  
-**Elapsed**: ~3.5 days  
-**Remaining**: ~0.5–1 day
+**Elapsed**: ~4.5 days  
+**Remaining**: 0 days
 
 ---
 
@@ -396,6 +401,6 @@ def run_historical_analysis():
 │  ✅ Classify crop health per season                         │
 │  ✅ Visualize with interactive time series plots            │
 ├─────────────────────────────────────────────────────────────┤
-│  Estimated effort: 4.5–5.5 days                             │
+│  Status: Complete (All Phases A-E Done)                     │
 └─────────────────────────────────────────────────────────────┘
 ```
