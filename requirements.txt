@@ -3,3 +3,7 @@ rasterio
 numpy
 matplotlib
 pystac
+contextily
+requests-cache
+shapely>=2.0.0
+pyproj

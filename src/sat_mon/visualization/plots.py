@@ -2,6 +2,26 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.widgets import RadioButtons, CheckButtons, Slider
 import numpy as np
+import contextily as cx
+from rasterio.crs import CRS
+from rasterio.warp import transform_bounds
+import os
+from pathlib import Path
+from typing import List, Optional, Tuple, Any
+from datetime import datetime, timedelta
+import matplotlib.dates as mdates
+from ..analysis.phenology import Season
+
+# Optional request caching for basemap tiles (speeds repeated requests / local development)
+try:
+    import requests_cache
+    cache_dir = Path('.cache')
+    cache_dir.mkdir(exist_ok=True)
+    # Creates .cache/contextily_cache.sqlite with 1 day expiry
+    requests_cache.install_cache(str(cache_dir / 'contextily_cache'), backend='sqlite', expire_after=86400)
+    print(f"[visualization] requests_cache enabled: {cache_dir / 'contextily_cache.sqlite'}")
+except Exception:
+    requests_cache = None
 
 class CropMonitorVisualizer:
     def __init__(self, processed_data, raw_data=None):
@@ -10,11 +30,13 @@ class CropMonitorVisualizer:
         self.fig = None
         self.view_mode = 'grid'  # 'grid' or 'overlay'
         self.active_overlay_key = 'ndvi' # Default selected overlay
+        self.base_layer = 'rgb' # 'rgb' or 'google'
 
         # Layer configurations for Overlay Mode
         # Format: (key, label, default_alpha, cmap, vmin, vmax, colorbar_label, description)
         self.layers_config = [
-            ("rgb", "RGB (Base)", 1.0, None, None, None, None, "True color composite"),
+            ("rgb", "RGB (Composite)", 1.0, None, None, None, None, "True color composite"),
+            ("esri_satellite", "ESRI Satellite", 1.0, None, None, None, None, "High-res Basemap"),
             ("evi", "EVI", 0.5, "YlGn", 0, 1, "EVI", "Improved sensitivity in high biomass"),
             ("savi", "SAVI", 0.5, "YlGn", 0, 1, "SAVI", "Corrects for soil brightness"),
             ("ndmi", "NDMI", 0.5, "Blues", -0.5, 0.5, "NDMI", "Vegetation water content"),
@@ -186,6 +208,113 @@ class CropMonitorVisualizer:
         date = self.get_date_short(date_key)
         return f"{base_label} - {date}"
 
+    def get_extent(self):
+        """Calculates the extent (left, right, bottom, top) in native CRS."""
+        if not self.raw_data or not self.raw_data.get('bbox'):
+            return None, None
+        
+        bbox_wgs84 = self.raw_data['bbox']
+        
+        # Defensive EPSG extraction with fallback
+        epsg = self.raw_data.get('s2', {}).get('epsg')
+        if epsg is None:
+            print("[get_extent] Warning: No EPSG found, using Web Mercator (3857)")
+            epsg = 3857
+        
+        try:
+            epsg = int(epsg)  # Coerce string to int
+            native_crs = CRS.from_epsg(epsg)
+        except (ValueError, TypeError, Exception) as e:
+            print(f"[get_extent] CRS error ({e}), falling back to EPSG:3857")
+            epsg = 3857
+            native_crs = CRS.from_epsg(3857)
+        
+        # Transform WGS84 bbox to Native CRS
+        # transform_bounds takes (left, bottom, right, top)
+        # bbox is [min_lon, min_lat, max_lon, max_lat] which is (left, bottom, right, top)
+        try:
+            left, bottom, right, top = transform_bounds(CRS.from_epsg(4326), native_crs, *bbox_wgs84)
+            return [left, right, bottom, top], f"EPSG:{epsg}"
+        except Exception as e:
+            print(f"[get_extent] Transform error: {e}")
+            return None, None
+
+    def _calculate_zoom(self, bounds):
+        """Calculate appropriate zoom level based on extent width in meters.
+        
+        Args:
+            bounds: [left, right, bottom, top] in projected CRS (meters)
+        
+        Returns:
+            int: Zoom level (10-18)
+        """
+        width = abs(bounds[1] - bounds[0])  # right - left
+        
+        # Heuristic: smaller extent = higher zoom
+        # At zoom 18, each tile covers ~150m at equator
+        # At zoom 14, each tile covers ~2.4km
+        if width < 500:
+            return 18
+        elif width < 1000:
+            return 17
+        elif width < 2000:
+            return 16
+        elif width < 5000:
+            return 15
+        elif width < 10000:
+            return 14
+        elif width < 20000:
+            return 13
+        elif width < 50000:
+            return 12
+        else:
+            return 11
+
+    def fetch_basemap_tiles(self, ax, bounds=None, crs=None, alpha=1.0, source='esri'):
+        """Fetches and plots basemap tiles.
+
+        Args:
+            ax: matplotlib axis to draw onto.
+            bounds: list-like [left, right, bottom, top] in the provided `crs`.
+            crs: rasterio CRS or EPSG string/int for the bounds.
+            alpha: opacity for the basemap.
+            source: (optional) can be 'esri', 'google' or a tile URL template.
+        """
+        if bounds is None or crs is None:
+            return
+
+        # CRITICAL: Set axis limits BEFORE calling add_basemap so contextily knows extent
+        left, right, bottom, top = bounds
+        ax.set_xlim(left, right)
+        ax.set_ylim(bottom, top)
+
+        # Calculate appropriate zoom level based on extent size
+        zoom = self._calculate_zoom(bounds)
+
+        try:
+            # Choose URL template based on source
+            if source == 'esri':
+                url = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                attribution = 'ESRI World Imagery'
+            elif source == 'google':
+                url = 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'
+                attribution = 'Google Maps'
+            else:
+                # If a custom URL was supplied as the `source` variable, use it directly
+                url = source
+                attribution = ''
+
+            cx.add_basemap(
+                ax,
+                crs=crs,
+                source=url,
+                attribution=attribution,
+                alpha=alpha,
+                zoom=zoom,
+            )
+        except Exception as e:
+            print(f"Error fetching basemap: {e}")
+
     def draw_overlay_view(self):
         """Renders the Single Image Overlay view."""
         # Layout: Main Map (Top), Controls (Right/Side), Rainfall (Bottom)
@@ -202,40 +331,62 @@ class CropMonitorVisualizer:
         # 1. Main Map Axis (Spans first 3 cols, first 4 rows)
         ax_map = self.fig.add_subplot(gs[0:4, 0:3])
         
-        # --- RENDER RGB BASE (Always On) ---
-        if "rgb" in self.processed_data:
-            ax_map.imshow(self.processed_data["rgb"])
-        else:
-            ax_map.text(0.5, 0.5, "RGB Base Not Available", ha='center', color='white')
+        # Calculate extent for georeferencing
+        extent, crs = self.get_extent()
+        
+        # --- RENDER BASE LAYER ---
+        if self.base_layer == 'google':
+            if extent and crs:
+                self.fetch_basemap_tiles(ax_map, bounds=extent, crs=crs, alpha=1.0, source='google')
+                ax_map.text(0.5, 0.02, "Base: Google Satellite", ha='center', va='bottom', transform=ax_map.transAxes, 
+                            fontsize=11, style='italic', backgroundcolor='#ffffffaa')
+            else:
+                ax_map.text(0.5, 0.5, "Google Maps Unavailable (Missing CRS/Extent)", ha='center', color='red')
+        elif self.base_layer == 'esri':
+            if extent and crs:
+                self.fetch_basemap_tiles(ax_map, bounds=extent, crs=crs, alpha=1.0, source='esri')
+                ax_map.text(0.5, 0.02, "Base: ESRI Satellite", ha='center', va='bottom', transform=ax_map.transAxes, 
+                            fontsize=11, style='italic', backgroundcolor='#ffffffaa')
+            else:
+                ax_map.text(0.5, 0.5, "ESRI Basemap Unavailable (Missing CRS/Extent)", ha='center', color='red')
+        else: # Default to RGB
+            if "rgb" in self.processed_data:
+                ax_map.imshow(self.processed_data["rgb"], extent=extent)
+                ax_map.text(0.5, 0.02, "Base: Sentinel-2 RGB", ha='center', va='bottom', transform=ax_map.transAxes, 
+                            fontsize=11, style='italic', backgroundcolor='#ffffffaa')
+            else:
+                ax_map.text(0.5, 0.5, "RGB Base Not Available", ha='center', color='white')
 
         # --- RENDER ACTIVE OVERLAY ---
         key = self.active_overlay_key
         # Find config for active key
         config = next((item for item in self.layers_config if item[0] == key), None)
         
-        if config and key != 'rgb' and key in self.processed_data:
+        if config:
             key, label, _, cmap, vmin, vmax, cb_label, desc = config
             alpha = self.layer_alphas[key]
             
-            # Draw Overlay
-            im = ax_map.imshow(self.processed_data[key], cmap=cmap, vmin=vmin, vmax=vmax, alpha=alpha)
+            # Special check: Don't draw RGB overlay if RGB is already base (unless user wants to, but usually redundant)
+            if key == 'rgb' and self.base_layer == 'rgb':
+                pass # Already drawn
             
-            # Title & Desc
-            title = self.get_layer_title(key, label)
-            ax_map.set_title(f"Overlay: {title}", fontsize=14)
-            ax_map.text(0.5, 0.02, desc, ha='center', va='bottom', transform=ax_map.transAxes, 
-                        fontsize=11, style='italic', backgroundcolor='#ffffffaa')
-            
-            # Colorbar (Right side of map axis)
-            plt.colorbar(im, ax=ax_map, fraction=0.03, pad=0.02, label=cb_label)
+            elif key in self.processed_data:
+                # Standard Array Overlay
+                im = ax_map.imshow(self.processed_data[key], cmap=cmap, vmin=vmin, vmax=vmax, alpha=alpha, extent=extent)
+                
+                # Title
+                title = self.get_layer_title(key, label)
+                ax_map.set_title(f"{title}", fontsize=14)
+                
+                # Desc (override base desc if visible)
+                if alpha > 0.1:
+                    ax_map.text(0.5, 0.05, desc, ha='center', va='bottom', transform=ax_map.transAxes, 
+                                fontsize=10, style='italic', backgroundcolor='#ffffffaa')
+                
+                # Colorbar (Right side of map axis)
+                if key != 'rgb': # No colorbar for RGB
+                    plt.colorbar(im, ax=ax_map, fraction=0.03, pad=0.02, label=cb_label)
         
-        elif key == 'rgb':
-             # Only RGB selected
-             title = self.get_layer_title('rgb', "RGB")
-             ax_map.set_title(title, fontsize=14)
-             ax_map.text(0.5, 0.02, "True color composite", ha='center', va='bottom', transform=ax_map.transAxes, 
-                        fontsize=11, style='italic', backgroundcolor='#ffffffaa')
-
         ax_map.axis('off')
 
         # 2. Control Panel (Right Side)
@@ -245,11 +396,38 @@ class CropMonitorVisualizer:
         self.draw_rainfall_row(gs, row_idx=4, col_span=4)
 
     def add_layer_controls(self):
-        """Adds RadioButtons for overlay selection and Slider for opacity."""
+        """Adds RadioButtons for overlay selection, Base Layer selection, and Slider for opacity."""
         
-        # --- 1. Overlay Selection (Radio) ---
-        # Get labels excluding RGB (base is implied)
-        overlay_choices = [item for item in self.layers_config if item[0] != 'rgb']
+        # --- 1. Base Layer Selection (Radio) ---
+        self.fig.text(0.82, 0.88, "Base Layer", fontsize=12, fontweight='bold')
+        ax_base = self.fig.add_axes([0.82, 0.81, 0.15, 0.06], facecolor='#f0f0f0')
+        base_labels = ['Sentinel-2 RGB', 'Google Maps', 'ESRI Satellite']
+        # compute active index safely
+        if self.base_layer == 'rgb':
+            active_idx = 0
+        elif self.base_layer == 'google':
+            active_idx = 1
+        else:
+            active_idx = 2
+
+        radio_base = RadioButtons(ax_base, base_labels, active=active_idx)
+
+        def on_base_click(label):
+            if 'Sentinel' in label:
+                self.base_layer = 'rgb'
+            elif 'Google' in label:
+                self.base_layer = 'google'
+            else:
+                self.base_layer = 'esri'
+            self.render()
+
+        radio_base.on_clicked(on_base_click)
+        self.widgets['base_radio'] = radio_base
+
+        # --- 2. Overlay Selection (Radio) ---
+        # Get labels excluding Google (as it's a base now) and optionally RGB (if we treat it as pure base)
+        # But we allow RGB as overlay to compare against Google
+        overlay_choices = self.layers_config # All config layers are valid overlays
         labels = [item[1] for item in overlay_choices]
         keys = [item[0] for item in overlay_choices]
         
@@ -260,10 +438,10 @@ class CropMonitorVisualizer:
             active_idx = 0 # Default if rgb or invalid
             self.active_overlay_key = keys[0]
 
-        self.fig.text(0.82, 0.88, "Select Overlay", fontsize=12, fontweight='bold')
+        self.fig.text(0.82, 0.78, "Overlay Layer", fontsize=12, fontweight='bold')
         
-        # Radio Axis
-        ax_radio = self.fig.add_axes([0.82, 0.35, 0.15, 0.50], facecolor='#f0f0f0')
+        # Radio Axis - adjusted position and height
+        ax_radio = self.fig.add_axes([0.82, 0.35, 0.15, 0.42], facecolor='#f0f0f0')
         radio = RadioButtons(ax_radio, labels, active=active_idx)
         
         def on_radio_click(label):
@@ -275,7 +453,7 @@ class CropMonitorVisualizer:
         radio.on_clicked(on_radio_click)
         self.widgets['overlay_radio'] = radio
         
-        # --- 2. Opacity Slider (Single) ---
+        # --- 3. Opacity Slider (Single) ---
         self.fig.text(0.82, 0.30, "Overlay Opacity", fontsize=10, fontweight='bold')
         ax_slider = self.fig.add_axes([0.82, 0.27, 0.15, 0.02])
         
@@ -366,4 +544,279 @@ def plot_grid(processed_data, raw_data=None):
     
     print("[Visualization] Interactive window opened. Close to exit.")
     plt.show()
+
+def plot_field_timeseries(
+    dates: List[datetime],
+    ndvi: List[float],
+    sm: List[Optional[float]] = None,
+    lst: List[Optional[float]] = None,
+    rainfall: List[Optional[float]] = None,
+    seasons: List[Season] = None,
+    field_name: str = "Field Analysis",
+    figsize: Tuple[int, int] = (14, 12),
+    save_path: str = None
+) -> plt.Figure:
+    """
+    Creates a multi-panel time series plot for a single field (Phase D).
+    
+    Panel 1: NDVI with planting/harvest markers
+    Panel 2: Soil Moisture (if provided)
+    Panel 3: LST (if provided)
+    Panel 4: Rainfall (if provided)
+    
+    Args:
+        dates: List of dates for the x-axis.
+        ndvi: List of NDVI values corresponding to dates.
+        sm: Optional list of Soil Moisture values.
+        lst: Optional list of LST values (Kelvin or Celsius).
+        rainfall: Optional list of daily rainfall values (mm).
+        seasons: List of detected Season objects for markers.
+        field_name: Title for the plot.
+        figsize: Figure size tuple (width, height).
+        save_path: Optional path to save the figure.
+        
+    Returns:
+        The matplotlib Figure object.
+    """
+    
+    # Validate input lengths
+    if len(dates) != len(ndvi):
+        raise ValueError(f"dates ({len(dates)}) and ndvi ({len(ndvi)}) must have same length")
+    if sm is not None and len(sm) != len(dates):
+        raise ValueError(f"sm ({len(sm)}) must match dates length ({len(dates)})")
+    if lst is not None and len(lst) != len(dates):
+        raise ValueError(f"lst ({len(lst)}) must match dates length ({len(dates)})")
+    if rainfall is not None and len(rainfall) != len(dates):
+        raise ValueError(f"rainfall ({len(rainfall)}) must match dates length ({len(dates)})")
+    
+    # Determine which panels to show
+    has_sm = sm is not None and any(v is not None for v in sm)
+    has_lst = lst is not None and any(v is not None for v in lst)
+    has_rain = rainfall is not None and any(v is not None for v in rainfall)
+    
+    active_panels = 1 + int(has_sm) + int(has_lst) + int(has_rain)
+    
+    # Create figure with shared x-axis
+    fig, axes = plt.subplots(active_panels, 1, figsize=figsize, sharex=True)
+    if active_panels == 1:
+        axes = [axes]
+    
+    fig.suptitle(f"{field_name} - Time Series Analysis", fontsize=16, y=0.95)
+    
+    curr_ax_idx = 0
+    
+    # --- Panel 1: NDVI ---
+    ax_ndvi = axes[curr_ax_idx]
+    
+    # Filter out None values for plotting
+    valid_mask = np.array([v is not None for v in ndvi])
+    if any(valid_mask):
+        plot_dates = np.array(dates)[valid_mask]
+        plot_vals = np.array(ndvi)[valid_mask].astype(float)
+        
+        ax_ndvi.plot(plot_dates, plot_vals, 'g.-', label='NDVI', linewidth=1.5, markersize=8)
+        
+        # Add smooth trend line if enough data
+        if len(plot_vals) > 10:
+             # Simple rolling mean for visual trend
+             window = min(5, len(plot_vals)//2)
+             trend = np.convolve(plot_vals, np.ones(window)/window, mode='valid')
+             trend_dates = plot_dates[window//2 : -window//2 + 1] if window % 2 != 0 else plot_dates[window//2 : -window//2]
+             
+             # Handle length mismatch due to padding logic diffs
+             if len(trend) == len(trend_dates):
+                ax_ndvi.plot(trend_dates, trend, 'k--', alpha=0.3, label='Trend', linewidth=1)
+    
+    ax_ndvi.set_ylabel("NDVI")
+    ax_ndvi.set_ylim(0, 1.0)
+    ax_ndvi.grid(True, alpha=0.3)
+    
+    # Add season markers
+    if seasons:
+        legend_elements = []
+        added_labels = set()
+        
+        for i, s in enumerate(seasons):
+            # Planting (Start)
+            if s.start_date:
+                ax_ndvi.axvline(s.start_date, color='green', linestyle='--', alpha=0.6)
+                if 'Planting' not in added_labels:
+                    ax_ndvi.plot([], [], 'g--', label='Planting')
+                    added_labels.add('Planting')
+                
+                # Label P
+                ax_ndvi.text(s.start_date, 0.05, 'P', color='green', 
+                             ha='center', va='bottom', fontweight='bold')
+
+            # Harvest (End)
+            if s.end_date:
+                ax_ndvi.axvline(s.end_date, color='orange', linestyle='--', alpha=0.6)
+                if 'Harvest' not in added_labels:
+                    ax_ndvi.plot([], [], color='orange', linestyle='--', label='Harvest')
+                    added_labels.add('Harvest')
+                
+                # Label H
+                ax_ndvi.text(s.end_date, 0.05, 'H', color='orange', 
+                             ha='center', va='bottom', fontweight='bold')
+                
+            # Peak marker
+            if s.peak_date and s.peak_ndvi:
+                ax_ndvi.scatter([s.peak_date], [s.peak_ndvi], c='red', s=50, zorder=5)
+                # Label health
+                ax_ndvi.text(s.peak_date, s.peak_ndvi + 0.02, f"{s.health}\n(pk:{s.peak_ndvi:.2f})", 
+                             ha='center', va='bottom', fontsize=8, color='darkred')
+
+        # Shade the seasons
+        for s in seasons:
+            if s.start_date and s.end_date:
+                ax_ndvi.axvspan(s.start_date, s.end_date, color='green', alpha=0.05)
+
+    ax_ndvi.legend(loc='upper left', frameon=True)
+    curr_ax_idx += 1
+    
+    # --- Panel 2: Soil Moisture ---
+    if has_sm:
+        ax_sm = axes[curr_ax_idx]
+        valid_mask = np.array([v is not None for v in sm])
+        if any(valid_mask):
+            p_dates = np.array(dates)[valid_mask]
+            p_vals = np.array(sm)[valid_mask].astype(float)
+            ax_sm.plot(p_dates, p_vals, 'b.-', label='Soil Moisture', linewidth=1.5)
+            
+        ax_sm.set_ylabel("Soil Moisture") # Unit depends on source (e.g., m3/m3 or %)
+        ax_sm.grid(True, alpha=0.3)
+        ax_sm.legend(loc='upper left')
+        curr_ax_idx += 1
+        
+    # --- Panel 3: LST ---
+    if has_lst:
+        ax_lst = axes[curr_ax_idx]
+        unit = "°C"  # Default unit
+        valid_mask = np.array([v is not None for v in lst])
+        if any(valid_mask):
+            p_dates = np.array(dates)[valid_mask]
+            p_vals = np.array(lst)[valid_mask].astype(float)
+            
+            # Convert Kelvin to Celsius if seemingly in Kelvin range (>200)
+            if np.mean(p_vals) > 200:
+                p_vals = p_vals - 273.15
+            
+            ax_lst.plot(p_dates, p_vals, 'r.-', label=f'LST ({unit})', linewidth=1.5)
+            
+        ax_lst.set_ylabel(f"LST ({unit})")
+        ax_lst.grid(True, alpha=0.3)
+        ax_lst.legend(loc='upper left')
+        curr_ax_idx += 1
+        
+    # --- Panel 4: Rainfall ---
+    if has_rain:
+        ax_rain = axes[curr_ax_idx]
+        valid_mask = np.array([v is not None for v in rainfall])
+        if any(valid_mask):
+            p_dates = np.array(dates)[valid_mask]
+            p_vals = np.array(rainfall)[valid_mask].astype(float)
+            
+            # Bar chart for daily rain
+            ax_rain.bar(p_dates, p_vals, color='skyblue', label='Daily Rain (mm)', width=1.0)
+            
+            # Add cumulative line on twin axis
+            ax_cum = ax_rain.twinx()
+            cum_vals = np.nancumsum(p_vals)
+            ax_cum.plot(p_dates, cum_vals, color='navy', linestyle='-', linewidth=1, alpha=0.7, label='Cumulative')
+            ax_cum.set_ylabel("Cumul. (mm)", color='navy')
+            
+        ax_rain.set_ylabel("Daily Rain (mm)")
+        ax_rain.grid(True, alpha=0.3)
+        ax_rain.legend(loc='upper left')
+        curr_ax_idx += 1
+        
+    # Format x-axis for the bottom plot
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter('%Y-%b'))
+    axes[-1].xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    plt.setp(axes[-1].xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[plots] Saved timeseries chart to {save_path}")
+        
+    return fig
+
+def plot_season_comparison(
+    seasons: List[Season],
+    figsize: Tuple[int, int] = (10, 6),
+    save_path: str = None
+) -> plt.Figure:
+    """
+    Creates a bar chart comparing season metrics (Peak NDVI, Duration).
+    
+    Args:
+        seasons: List of detected Season objects.
+        figsize: Figure size tuple.
+        save_path: Optional path to save the figure.
+        
+    Returns:
+        The matplotlib Figure object.
+    """
+    if not seasons:
+        return plt.figure(figsize=figsize)
+        
+    fig, ax1 = plt.subplots(figsize=figsize)
+    
+    # Prepare data - use start date for unique labels (handles multiple seasons per year)
+    labels = [s.start_date.strftime('%Y-%m') if s.start_date else f"S{i+1}" for i, s in enumerate(seasons)]
+    peaks = [s.peak_ndvi for s in seasons]
+    durations = [s.duration_days for s in seasons]
+    healths = [s.health for s in seasons]
+    
+    x = np.arange(len(labels))
+    width = 0.35
+    
+    # Health colors
+    health_map = {
+        'excellent': '#2ca02c', # green
+        'good': '#bcbd22',      # yellow-green
+        'moderate': '#ff7f0e',  # orange
+        'poor': '#d62728',      # red
+        'pending': 'gray'
+    }
+    colors = [health_map.get(h, 'gray') for h in healths]
+    
+    # Plot Peak NDVI bars
+    bars1 = ax1.bar(x - width/2, peaks, width, label='Peak NDVI', color=colors, alpha=0.8)
+    
+    ax1.set_ylabel('Peak NDVI')
+    ax1.set_ylim(0, 1.0)
+    ax1.set_title('Season Comparison: Health & Duration')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels)
+    
+    # Plot Duration line on secondary axis
+    ax2 = ax1.twinx()
+    ax2.plot(x, durations, 'b-o', label='Duration (days)', linewidth=2, markersize=8)
+    ax2.set_ylabel('Duration (days)', color='blue')
+    ax2.tick_params(axis='y', labelcolor='blue')
+    
+    # Add labels to bars
+    for i, rect in enumerate(bars1):
+        height = rect.get_height()
+        ax1.annotate(f'{healths[i]}',
+                    xy=(rect.get_x() + rect.get_width() / 2, height/2),
+                    xytext=(0, 0),
+                    textcoords="offset points",
+                    ha='center', va='center', rotation=90, color='white', fontweight='bold')
+
+    # Combined legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[plots] Saved comparison chart to {save_path}")
+        
+    return fig
 

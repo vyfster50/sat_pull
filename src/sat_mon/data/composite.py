@@ -46,6 +46,11 @@ def get_satellite_data(lat, lon, buffer=0.05):
         ref_shape = red.shape
         print(f"Reference Grid Shape: {ref_shape}")
 
+        # Extract CRS if available
+        epsg = item_s2.get('properties', {}).get('proj:epsg')
+        if epsg:
+            print(f"  Native CRS: EPSG:{epsg}")
+
         data["s2"] = {
             "red": red,
             "green": read_band(item_s2, "B03", bbox, out_shape=ref_shape),
@@ -54,7 +59,8 @@ def get_satellite_data(lat, lon, buffer=0.05):
             "swir": read_band(item_s2, "B11", bbox, out_shape=ref_shape), # Added B11 (SWIR)
             "red_edge": read_band(item_s2, "B05", bbox, out_shape=ref_shape),
             "scl": read_band(item_s2, "SCL", bbox, dtype="uint8", out_shape=ref_shape),
-            "metadata": item_s2
+            "metadata": item_s2,
+            "epsg": epsg
         }
         
         # Check S2 cloud cover for fallback decision
@@ -160,24 +166,39 @@ def get_satellite_data(lat, lon, buffer=0.05):
         sortby=[{"field": "datetime", "direction": "desc"}]
     )
     if items_rain:
-        # Stack last 30 days and sum for accumulation
-        rain_stack = []
+        # Stream last 30 days and compute accumulations without stacking to save memory
+        from collections import deque
+        sum30 = None
+        sum7 = None
+        last_day = None
+        window7 = deque(maxlen=7)
+
+        count = 0
         for item in items_rain[::-1]:  # Reverse to chronological order (oldest first)
             try:
                 rain_band = read_band(item, "rainfall", bbox, out_shape=ref_shape)
-                rain_stack.append(rain_band)
+                count += 1
+                last_day = rain_band
+                # Update 30-day sum
+                sum30 = rain_band if sum30 is None else (sum30 + rain_band)
+                # Update 7-day rolling window
+                if len(window7) == window7.maxlen:
+                    # Maintain sum7 by removing oldest
+                    oldest = window7[0]
+                    sum7 = (sum7 - oldest) if sum7 is not None else None
+                window7.append(rain_band)
+                sum7 = rain_band if sum7 is None else (sum7 + rain_band)
             except Exception as e:
                 print(f"  Warning: Could not read rainfall for {item.get('id')}: {e}")
-        
-        if rain_stack:
-            rain_array = np.stack(rain_stack, axis=0)
+
+        if count > 0 and last_day is not None:
             data["rain"] = {
-                "daily": rain_array[0],  # Latest day
-                "rain_7d": np.sum(rain_array[-7:], axis=0),  # Last 7 days
-                "rain_30d": np.sum(rain_array, axis=0),  # All 30 days
+                "daily": last_day,  # Latest day
+                "rain_7d": sum7 if sum7 is not None else last_day,
+                "rain_30d": sum30 if sum30 is not None else last_day,
                 "metadata": items_rain[0]
             }
-            print(f"  Fetched {len(rain_stack)} days of rainfall data")
+            print(f"  Fetched {count} days of rainfall data")
         else:
             data["rain"] = None
     else:

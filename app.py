@@ -73,6 +73,8 @@ def get_interactive_input():
     
     print(f"Selected coordinates: ({lat}, {lon})")
     print(f"Selected resolution: {buffer}° (approx. {buffer * 111320:.0f} meters)")
+    if buffer >= 0.2:
+        print("[warning] Large area selected. Imagery will be downsampled to prevent out-of-memory.")
     
     return lat, lon, buffer
 
