@@ -73,6 +73,37 @@ class MapWindow:
         self.ax.set_title('Draw your field boundary (Rectangle or Circle)', fontsize=14)
         
         return self.fig, self.ax
+
+    def display_results(self, analysis_results, selection):
+        """
+        Display analysis results with field overlay.
+        
+        Args:
+            analysis_results: dict with 'ndvi', 'lst', etc.
+            selection: Field selection from FieldSelector
+        """
+        try:
+            from .raster_overlay import RasterOverlay
+        except Exception as e:
+            print(f"Warning: RasterOverlay unavailable: {e}")
+            return
+
+        overlay = RasterOverlay(selection)
+
+        # Display NDVI if available
+        if 'ndvi' in analysis_results or 'ndvi_values' in analysis_results or 'values' in analysis_results:
+            # Support both timeseries and single raster style inputs
+            if 'values' in analysis_results:
+                ndvi_data = {
+                    'values': analysis_results['values'],
+                    'bounds': analysis_results.get('bounds', selection.get('bbox'))
+                }
+            else:
+                ndvi_list = analysis_results.get('ndvi', analysis_results.get('ndvi_values', []))
+                ndvi_data = {'ndvi': ndvi_list}
+
+            overlay.display_ndvi(ndvi_data, title="NDVI Analysis Results")
+            overlay.show()
     
     def _calculate_extent(self):
         """

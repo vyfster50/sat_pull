@@ -637,11 +637,11 @@ def test_field_selector_shape_switch(self):
 
 ---
 
-## Phase C: Raster Display with Field Overlay
+## Phase C: Raster Display with Field Overlay (✅ COMPLETE)
 
 **Goal:** Display analysis results (NDVI, etc.) with field boundary overlay and transparency masking.
 
-### C.1: Create Raster Overlay Module
+### C.1: Create Raster Overlay Module (✅ Done)
 
 Create new file: `src/sat_mon/gui/raster_overlay.py`
 
@@ -938,7 +938,7 @@ if __name__ == "__main__":
     overlay.show()
 ```
 
-### C.2: Add Display Method to MapWindow
+### C.2: Add Display Method to MapWindow (✅ Done)
 
 Add to `src/sat_mon/gui/map_window.py`:
 

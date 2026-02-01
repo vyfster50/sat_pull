@@ -89,6 +89,8 @@ def get_interactive_input():
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Satellite Crop Monitoring')
+    parser.add_argument('--gui', action='store_true',
+                        help='Launch GUI mode for interactive field selection (v9)')
     parser.add_argument('--historical', action='store_true', 
                         help='Run historical field-level analysis')
     parser.add_argument('--lat', type=float, help='Field center latitude')
@@ -250,6 +252,16 @@ def run_historical_analysis(lat, lon, radius, start_date, end_date):
 def main():
     setup_environment()
     args = parse_arguments()
+    
+    # New: GUI Mode (v9) - optional, does not affect existing flows
+    if args.gui:
+        try:
+            from sat_mon.gui.orchestrator import run_gui_mode
+            run_gui_mode()
+            return
+        except Exception as e:
+            print(f"Error launching GUI mode: {e}")
+            # Fall back to existing CLI flows
     
     # Check for historical analysis mode
     if args.historical:
