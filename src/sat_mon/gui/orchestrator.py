@@ -66,6 +66,11 @@ class GUIOrchestrator:
             lon=center['lon'],
             buffer=buffer
         )
+        # Persist selection into raw_data so visualizations can mask to field
+        try:
+            raw_data['selection'] = self.field_selection
+        except Exception:
+            pass
         
         # 3. Processing
         print("Processing indices...")

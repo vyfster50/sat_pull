@@ -226,7 +226,7 @@ class FieldSelector:
         center_y = (y1 + y2) / 2
         radius_x = abs(x2 - x1) / 2
         radius_y = abs(y2 - y1) / 2
-        radius = (radius_x + radius_y) / 2  # Average for circle (in meters for EPSG:3857)
+        radius = (radius_x + radius_y) / 2  # Average for circle (EPSG:3857 units ~ meters)
 
         # Ignore accidental clicks with effectively zero radius (< 50 m)
         if radius is None or radius <= 50:
@@ -235,13 +235,16 @@ class FieldSelector:
         # Convert center to WGS84
         center_lon, center_lat = self._transformer.transform(center_x, center_y)
         
-        # Convert radius to approximate degrees
+        # Convert radius to degrees (approximate) for compatibility fields
         # At equator, 1 degree ≈ 111km. Adjust for latitude.
-        meters_per_degree = 111000 * np.cos(np.radians(center_lat))
-        radius_degrees = radius / meters_per_degree
+        cos_lat = np.cos(np.radians(center_lat))
+        meters_per_degree = 111000 * cos_lat
+        radius_degrees = radius / max(1e-6, meters_per_degree)
         
-        # Also calculate radius in km for display
-        radius_km = radius / 1000
+        # Calculate true ground radius in meters
+        # Web Mercator distorts scale by 1/cos(lat). We must scale down to get true meters.
+        radius_m = float(radius * cos_lat)
+        radius_km = radius_m / 1000.0
         
         # Store selection
         self.selection = {
@@ -252,6 +255,7 @@ class FieldSelector:
             },
             'radius_degrees': radius_degrees,
             'radius_km': radius_km,
+            'radius_m': radius_m,
             # For compatibility - create bounding box
             'bbox': [
                 center_lon - radius_degrees,
@@ -263,7 +267,7 @@ class FieldSelector:
         
         print(f"Circle selected:")
         print(f"  Center: {center_lat:.6f}°N, {center_lon:.6f}°E")
-        print(f"  Radius: {radius_km:.2f} km ({radius_degrees:.4f}°)")
+        print(f"  Radius: {radius_km:.2f} km ({radius_degrees:.4f}°) ~ {radius_m:.0f} m")
 
     def deactivate(self):
         """Deactivate selectors to avoid callbacks after figure closes."""

@@ -16,6 +16,9 @@ def search_stac(collections, bbox, datetime=None, limit=1, query=None, sortby=No
         payload["datetime"] = datetime
     if sortby:
         payload["sortby"] = sortby
+    # Pass-through arbitrary STAC query filters when provided (e.g., cloud cover)
+    if query:
+        payload["query"] = query
         
     try:
         response = requests.post(STAC_URL, json=payload, timeout=30)

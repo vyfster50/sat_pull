@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple, Any
 from datetime import datetime, timedelta
 import matplotlib.dates as mdates
 from ..analysis.phenology import Season
+from pyproj import Transformer
 
 # Optional request caching for basemap tiles (speeds repeated requests / local development)
 try:
@@ -31,6 +32,9 @@ class CropMonitorVisualizer:
         self.view_mode = 'grid'  # 'grid' or 'overlay'
         self.active_overlay_key = 'ndvi' # Default selected overlay
         self.base_layer = 'rgb' # 'rgb' or 'google'
+        # Selection/mask
+        self.field_selection = (raw_data or {}).get('selection') if raw_data else None
+        self._cached_mask = None  # (mask, shape_cached)
 
         # Layer configurations for Overlay Mode
         # Format: (key, label, default_alpha, cmap, vmin, vmax, colorbar_label, description)
@@ -239,6 +243,25 @@ class CropMonitorVisualizer:
             print(f"[get_extent] Transform error: {e}")
             return None, None
 
+    def _pad_bounds(self, bounds, frac: float = 0.15):
+        """Pad [left, right, bottom, top] by a fraction on each side.
+
+        Args:
+            bounds: [left, right, bottom, top]
+            frac: fraction of width/height to add on each side (0.15 = 15%)
+
+        Returns:
+            [left, right, bottom, top] with padding applied
+        """
+        if not bounds:
+            return bounds
+        left, right, bottom, top = bounds
+        width = right - left
+        height = top - bottom
+        dx = width * frac
+        dy = height * frac
+        return [left - dx, right + dx, bottom - dy, top + dy]
+
     def _calculate_zoom(self, bounds):
         """Calculate appropriate zoom level based on extent width in meters.
         
@@ -333,24 +356,31 @@ class CropMonitorVisualizer:
         
         # Calculate extent for georeferencing
         extent, crs = self.get_extent()
+        padded = self._pad_bounds(extent, 0.15) if extent else None
         
         # --- RENDER BASE LAYER ---
         if self.base_layer == 'google':
-            if extent and crs:
-                self.fetch_basemap_tiles(ax_map, bounds=extent, crs=crs, alpha=1.0, source='google')
+            if padded and crs:
+                self.fetch_basemap_tiles(ax_map, bounds=padded, crs=crs, alpha=1.0, source='google')
                 ax_map.text(0.5, 0.02, "Base: Google Satellite", ha='center', va='bottom', transform=ax_map.transAxes, 
                             fontsize=11, style='italic', backgroundcolor='#ffffffaa')
             else:
                 ax_map.text(0.5, 0.5, "Google Maps Unavailable (Missing CRS/Extent)", ha='center', color='red')
         elif self.base_layer == 'esri':
-            if extent and crs:
-                self.fetch_basemap_tiles(ax_map, bounds=extent, crs=crs, alpha=1.0, source='esri')
+            if padded and crs:
+                self.fetch_basemap_tiles(ax_map, bounds=padded, crs=crs, alpha=1.0, source='esri')
                 ax_map.text(0.5, 0.02, "Base: ESRI Satellite", ha='center', va='bottom', transform=ax_map.transAxes, 
                             fontsize=11, style='italic', backgroundcolor='#ffffffaa')
             else:
                 ax_map.text(0.5, 0.5, "ESRI Basemap Unavailable (Missing CRS/Extent)", ha='center', color='red')
         else: # Default to RGB
             if "rgb" in self.processed_data:
+                # Keep axes padded, but draw RGB to the exact analysis extent
+                if padded is not None:
+                    # Set axes to padded bounds to create margin
+                    left, right, bottom, top = padded
+                    ax_map.set_xlim(left, right)
+                    ax_map.set_ylim(bottom, top)
                 ax_map.imshow(self.processed_data["rgb"], extent=extent)
                 ax_map.text(0.5, 0.02, "Base: Sentinel-2 RGB", ha='center', va='bottom', transform=ax_map.transAxes, 
                             fontsize=11, style='italic', backgroundcolor='#ffffffaa')
@@ -371,8 +401,10 @@ class CropMonitorVisualizer:
                 pass # Already drawn
             
             elif key in self.processed_data:
-                # Standard Array Overlay
-                im = ax_map.imshow(self.processed_data[key], cmap=cmap, vmin=vmin, vmax=vmax, alpha=alpha, extent=extent)
+                # Standard Array Overlay (masked to field if available)
+                arr = self.processed_data[key]
+                arr_to_show = self._apply_field_mask(arr)
+                im = ax_map.imshow(arr_to_show, cmap=cmap, vmin=vmin, vmax=vmax, alpha=alpha, extent=extent)
                 
                 # Title
                 title = self.get_layer_title(key, label)
@@ -387,6 +419,12 @@ class CropMonitorVisualizer:
                 if key != 'rgb': # No colorbar for RGB
                     plt.colorbar(im, ax=ax_map, fraction=0.03, pad=0.02, label=cb_label)
         
+        # Persist field boundary overlay (dotted)
+        try:
+            self._draw_field_boundary(ax_map)
+        except Exception as e:
+            print(f"[overlay] Boundary draw warning: {e}")
+
         ax_map.axis('off')
 
         # 2. Control Panel (Right Side)
@@ -394,6 +432,171 @@ class CropMonitorVisualizer:
 
         # 3. Rainfall/Weather (Bottom Row)
         self.draw_rainfall_row(gs, row_idx=4, col_span=4)
+
+    def _apply_field_mask(self, arr):
+        """Return array masked outside the selected field, if selection present."""
+        if self.field_selection is None or self.raw_data is None or self.raw_data.get('bbox') is None:
+            return arr
+        # Build/cached mask for current array shape
+        mask = self._get_mask_for_shape(arr.shape)
+        if mask is None:
+            return arr
+        # Use masked array then fill outside with NaN for transparency
+        try:
+            masked = np.where(mask, arr, np.nan)
+            return masked
+        except Exception:
+            return arr
+
+    def _get_mask_for_shape(self, shape):
+        """Compute or reuse a boolean mask (True inside field) for given raster shape."""
+        try:
+            if self._cached_mask is not None and self._cached_mask[1] == shape:
+                return self._cached_mask[0]
+
+            bbox = self.raw_data.get('bbox')
+            if bbox is None:
+                return None
+            min_lon, min_lat, max_lon, max_lat = bbox[0], bbox[1], bbox[2], bbox[3]
+            nrows, ncols = shape[0], shape[1]
+            # Build coordinate grids (pixel centers) in WGS84
+            lons = np.linspace(min_lon, max_lon, ncols)
+            lats = np.linspace(min_lat, max_lat, nrows)
+            lon_grid, lat_grid = np.meshgrid(lons, lats)
+
+            sel = self.field_selection
+            if sel is None:
+                return None
+
+            if sel.get('type') == 'circle':
+                c = sel.get('center', {})
+                center_lat = float(c.get('lat'))
+                center_lon = float(c.get('lon'))
+                radius_m = float(sel.get('radius_m') or 0.0)
+                # If radius_m not present (older selections), fall back to degrees approximation
+                if radius_m <= 0.0:
+                    radius_deg = float(sel.get('radius_degrees') or 0.0)
+                    if radius_deg <= 0.0:
+                        sb = sel.get('bbox', [center_lon, center_lat, center_lon, center_lat])
+                        radius_deg = max(abs(sb[2]-sb[0]), abs(sb[3]-sb[1]))/2.0
+                    lon_scale = np.cos(np.radians(center_lat))
+                    dlat = lat_grid - center_lat
+                    dlon = (lon_grid - center_lon) * lon_scale
+                    dist_deg = np.sqrt(dlat*dlat + dlon*dlon)
+                    inside = dist_deg <= radius_deg
+                else:
+                    # Compute distance in the native projected CRS to match boundary drawing
+                    try:
+                        epsg = int((self.raw_data.get('s2', {}) or {}).get('epsg') or 3857)
+                    except Exception:
+                        epsg = 3857
+                    to_native = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+                    # Project grids and center
+                    X, Y = to_native.transform(lon_grid, lat_grid)
+                    cx, cy = to_native.transform(center_lon, center_lat)
+                    dist_m = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+                    inside = dist_m <= radius_m
+            else:
+                # Rectangle: inside if within selection bbox
+                sb = sel.get('bbox') or []
+                if len(sb) != 4:
+                    return None
+                lon_min_s, lat_min_s, lon_max_s, lat_max_s = map(float, sb)
+                inside = (lon_grid >= lon_min_s) & (lon_grid <= lon_max_s) & (lat_grid >= lat_min_s) & (lat_grid <= lat_max_s)
+
+            self._cached_mask = (inside, shape)
+            return inside
+        except Exception as e:
+            print(f"[mask] Mask computation error: {e}")
+            return None
+
+    def _draw_field_boundary(self, ax):
+        """Draw a dashed boundary of the selected field on the given axis."""
+        if self.field_selection is None or self.raw_data is None:
+            return
+        extent, crs = self.get_extent()
+        if extent is None:
+            return
+        # Transform selection bbox to same projected CRS as extent for drawing
+        from rasterio.crs import CRS as _CRS
+        try:
+            epsg = int((self.raw_data.get('s2', {}) or {}).get('epsg') or 3857)
+        except Exception:
+            epsg = 3857
+        native_crs = _CRS.from_epsg(epsg)
+        sel = self.field_selection
+        import matplotlib.patches as mpatches
+
+        if sel.get('type') == 'circle':
+            # Draw a true circle using projected center and radius in meters
+            c = sel.get('center', {})
+            center_lon = float(c.get('lon'))
+            center_lat = float(c.get('lat'))
+            radius_m = float(sel.get('radius_m') or 0.0)
+
+            # Transform center to native CRS
+            try:
+                to_native = Transformer.from_crs("EPSG:4326", native_crs, always_xy=True)
+                cx, cy = to_native.transform(center_lon, center_lat)
+            except Exception:
+                # Fallback: draw in WGS84 degrees with approximate radius (will look off)
+                cx, cy = center_lon, center_lat
+            # If radius_m missing, approximate from bbox width
+            if radius_m <= 0.0:
+                sb = sel.get('bbox') or [center_lon, center_lat, center_lon, center_lat]
+                try:
+                    left, bottom, right, top = transform_bounds(CRS.from_epsg(4326), native_crs, sb[0], sb[1], sb[2], sb[3])
+                    radius_m = max(abs(right - left), abs(top - bottom)) / 2.0
+                except Exception:
+                    radius_m = 0.0
+
+            # Compensate for half-pixel shrink in the mask (pixel-center criterion)
+            # Estimate pixel sizes from analysis extent and raster shape
+            # Use NDVI shape if available, else fall back to RGB or any 2D layer
+            nrows = ncols = None
+            try:
+                if 'ndvi' in self.processed_data and self.processed_data['ndvi'] is not None:
+                    nrows, ncols = self.processed_data['ndvi'].shape[:2]
+                elif 'rgb' in self.processed_data and self.processed_data['rgb'] is not None:
+                    nrows, ncols = self.processed_data['rgb'].shape[:2]
+                else:
+                    # Pick first 2D array available
+                    for v in self.processed_data.values():
+                        if isinstance(v, np.ndarray) and v.ndim >= 2:
+                            nrows, ncols = v.shape[:2]
+                            break
+            except Exception:
+                nrows = ncols = None
+
+            try:
+                left, right, bottom, top = extent
+                if nrows and ncols and nrows > 0 and ncols > 0:
+                    px_x = abs(right - left) / float(ncols)
+                    px_y = abs(top - bottom) / float(nrows)
+                    half_diag = 0.5 * (px_x ** 2 + px_y ** 2) ** 0.5
+                else:
+                    half_diag = 0.0
+            except Exception:
+                half_diag = 0.0
+
+            draw_radius = max(0.0, radius_m - half_diag)
+            circ = mpatches.Circle((cx, cy), radius=draw_radius, fill=False, linestyle='--', linewidth=2, edgecolor='white')
+            ax.add_patch(circ)
+        else:
+            # Rectangle selection: draw bbox rectangle
+            sb = sel.get('bbox') if sel else None
+            if not sb or len(sb) != 4:
+                return
+            try:
+                left, bottom, right, top = transform_bounds(CRS.from_epsg(4326), native_crs, sb[0], sb[1], sb[2], sb[3])
+            except Exception:
+                # Fallback: draw in data coords assuming extent uses WGS84
+                left, bottom, right, top = sb[0], sb[1], sb[2], sb[3]
+
+            width = right - left
+            height = top - bottom
+            rect = mpatches.Rectangle((left, bottom), width, height, fill=False, linestyle='--', linewidth=2, edgecolor='white')
+            ax.add_patch(rect)
 
     def add_layer_controls(self):
         """Adds RadioButtons for overlay selection, Base Layer selection, and Slider for opacity."""
