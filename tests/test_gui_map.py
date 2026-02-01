@@ -75,6 +75,73 @@ class TestMapWindow(unittest.TestCase):
         
         plt.close(fig)
 
+    def test_validation_too_small_rectangle(self):
+        """Test validation for a rectangle that is too small."""
+        from sat_mon.gui.field_selector import FieldSelector
+        import matplotlib.pyplot as plt
+        
+        fig, ax = plt.subplots()
+        selector = FieldSelector(ax)
+        
+        # Manually create a tiny selection (approx 1m x 1m)
+        selector.selection = {
+            'type': 'rectangle',
+            'bbox': [36.825, -1.275, 36.82500001, -1.27500001],
+            'center': {'lat': -1.275, 'lon': 36.825}
+        }
+        
+        is_valid, msg = selector.validate_selection()
+        # Should be invalid because < 100m
+        self.assertFalse(is_valid)
+        self.assertIn("Field too small", str(msg))
+        
+        plt.close(fig)
+
+    def test_validation_too_large_circle(self):
+        """Test validation for a circle that is too large."""
+        from sat_mon.gui.field_selector import FieldSelector
+        import matplotlib.pyplot as plt
+        
+        fig, ax = plt.subplots()
+        selector = FieldSelector(ax)
+        
+        # Manually create a huge selection (radius 200km -> diameter 400km)
+        selector.selection = {
+            'type': 'circle',
+            'center': {'lat': -1.275, 'lon': 36.825},
+            'radius_km': 200.0,
+            'bbox': [35.0, -3.0, 38.0, 0.0] # Dummy bbox
+        }
+        
+        is_valid, msg = selector.validate_selection()
+        # Should be invalid because > 100km
+        self.assertFalse(is_valid)
+        self.assertIn("Field too large", str(msg))
+        
+        plt.close(fig)
+
+    @patch('matplotlib.pyplot.show')
+    def test_analyze_without_selection_shows_error(self, mock_show):
+        """Test that clicking analyze without selection shows an error."""
+        from sat_mon.gui.map_window import MapWindow
+        import matplotlib.pyplot as plt
+        
+        window = MapWindow()
+        window.create_window()
+        window.setup_controls()
+        
+        # Mock _show_error to verify it's called
+        window._show_error = MagicMock()
+        
+        # Click analyze without selecting anything
+        # The event argument can be None for testing
+        window._on_analyze_click(None)
+        
+        window._show_error.assert_called_with("No field selected! Draw a rectangle or circle first.")
+        # Analysis should NOT be requested
+        self.assertFalse(hasattr(window, '_analysis_requested'))
+        
+        plt.close(window.fig)
 
 if __name__ == "__main__":
     unittest.main()

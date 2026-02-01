@@ -10,6 +10,9 @@ from matplotlib.widgets import RectangleSelector, EllipseSelector, RadioButtons
 from matplotlib.patches import Rectangle, Circle
 from pyproj import Transformer
 
+# Approximate meters per degree at the equator
+METERS_PER_DEGREE = 111_000
+
 
 class FieldSelector:
     """
@@ -58,7 +61,7 @@ class FieldSelector:
         self._rect_selector = RectangleSelector(
             self.ax,
             self._on_rectangle_select,
-            useblit=True,
+            useblit=False,
             button=[1],  # Left mouse button only
             minspanx=5,
             minspany=5,
@@ -71,7 +74,7 @@ class FieldSelector:
         self._ellipse_selector = EllipseSelector(
             self.ax,
             self._on_ellipse_select,
-            useblit=True,
+            useblit=False,
             button=[1],
             minspanx=5,
             minspany=5,
@@ -115,6 +118,54 @@ class FieldSelector:
         # Clear previous selection visual
         self._clear_patch()
     
+    def set_selection(self, bbox):
+        """
+        Programmatically set the selection (e.g. from initial CLI args).
+        
+        Args:
+            bbox: [lon_min, lat_min, lon_max, lat_max]
+        """
+        # Ensure bbox is float
+        lon_min, lat_min, lon_max, lat_max = map(float, bbox)
+        
+        # Update internal state
+        self.selection = {
+            'type': 'rectangle',
+            'bounds': {
+                'lat_min': lat_min,
+                'lat_max': lat_max,
+                'lon_min': lon_min,
+                'lon_max': lon_max
+            },
+            'center': {
+                'lat': (lat_min + lat_max) / 2,
+                'lon': (lon_min + lon_max) / 2
+            },
+            'bbox': [lon_min, lat_min, lon_max, lat_max]
+        }
+        
+        # Draw on map
+        # Convert to Web Mercator
+        transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+        # Transform min/max points
+        # Note: transform returns x, y
+        x_min, y_min = transformer.transform(lon_min, lat_min)
+        x_max, y_max = transformer.transform(lon_max, lat_max)
+        
+        width = x_max - x_min
+        height = y_max - y_min
+        
+        # Remove old patch if any
+        self._clear_patch()
+        
+        # Add new rectangle patch
+        self._current_patch = Rectangle(
+            (x_min, y_min), width, height,
+            edgecolor='red', facecolor='none', linewidth=2, linestyle='--'
+        )
+        self.ax.add_patch(self._current_patch)
+        self.ax.figure.canvas.draw_idle()
+
     def _on_rectangle_select(self, eclick, erelease):
         """
         Callback when rectangle selection is complete.
@@ -175,7 +226,11 @@ class FieldSelector:
         center_y = (y1 + y2) / 2
         radius_x = abs(x2 - x1) / 2
         radius_y = abs(y2 - y1) / 2
-        radius = (radius_x + radius_y) / 2  # Average for circle
+        radius = (radius_x + radius_y) / 2  # Average for circle (in meters for EPSG:3857)
+
+        # Ignore accidental clicks with effectively zero radius (< 50 m)
+        if radius is None or radius <= 50:
+            return
         
         # Convert center to WGS84
         center_lon, center_lat = self._transformer.transform(center_x, center_y)
@@ -209,6 +264,16 @@ class FieldSelector:
         print(f"Circle selected:")
         print(f"  Center: {center_lat:.6f}°N, {center_lon:.6f}°E")
         print(f"  Radius: {radius_km:.2f} km ({radius_degrees:.4f}°)")
+
+    def deactivate(self):
+        """Deactivate selectors to avoid callbacks after figure closes."""
+        try:
+            if self._rect_selector:
+                self._rect_selector.set_active(False)
+            if self._ellipse_selector:
+                self._ellipse_selector.set_active(False)
+        except Exception:
+            pass
     
     def _clear_patch(self):
         """Remove the current selection visualization."""
@@ -237,6 +302,47 @@ class FieldSelector:
             self._rect_selector.clear()
         if self._ellipse_selector:
             self._ellipse_selector.clear()
+
+    def validate_selection(self) -> tuple[bool, str | None]:
+        """
+        Validate the current selection.
+        
+        Returns:
+            tuple: (is_valid: bool, error_message: str or None)
+        """
+        if self.selection is None:
+            return False, "No field selected. Please draw a rectangle or circle."
+        
+        center = self.selection['center']
+        
+        # Check valid coordinates
+        if not (-90 <= center['lat'] <= 90):
+            return False, "Invalid latitude. Must be between -90 and 90."
+        if not (-180 <= center['lon'] <= 180):
+            return False, "Invalid longitude. Must be between -180 and 180."
+
+        # Calculate span in meters
+        if self.selection['type'] == 'circle':
+            radius_km = self.selection.get('radius_km', 0.0)
+            span_m = radius_km * 1000.0 * 2  # diameter
+        else:
+            bbox = self.selection['bbox']
+            lat_span = abs(bbox[3] - bbox[1])
+            lon_span = abs(bbox[2] - bbox[0])
+            # Convert degrees to meters at current latitude
+            lat_m = lat_span * METERS_PER_DEGREE
+            lon_m = lon_span * METERS_PER_DEGREE * abs(np.cos(np.radians(center['lat'])))
+            span_m = max(lat_m, lon_m)
+
+        # Check minimum size (~100m)
+        if span_m < 100:
+            return False, f"Field too small ({span_m:.0f}m). Please select at least 100m."
+        
+        # Check maximum size (~100km)
+        if span_m > 100_000:
+            return False, f"Field too large ({span_m/1000:.0f}km). Please keep under 100km."
+            
+        return True, None
 
 
 # Quick test

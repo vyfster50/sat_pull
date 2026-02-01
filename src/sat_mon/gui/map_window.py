@@ -26,7 +26,7 @@ class MapWindow:
     # ESRI Satellite tile URL
     ESRI_SATELLITE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
     
-    def __init__(self, center_lat=-1.0, center_lon=37.0, zoom_level=10):
+    def __init__(self, center_lat=-1.0, center_lon=37.0, zoom_level=10, initial_bbox=None):
         """
         Initialize the map window.
         
@@ -34,10 +34,12 @@ class MapWindow:
             center_lat: Center latitude in decimal degrees
             center_lon: Center longitude in decimal degrees  
             zoom_level: Zoom level (1-18, higher = more detail)
+            initial_bbox: Optional [min_lon, min_lat, max_lon, max_lat] to pre-select
         """
         self.center_lat = center_lat
         self.center_lon = center_lon
         self.zoom_level = zoom_level
+        self.initial_bbox = initial_bbox
         
         # Will be set in create_window()
         self.fig = None
@@ -71,6 +73,23 @@ class MapWindow:
         # Configure axes
         self.ax.set_aspect('equal')
         self.ax.set_title('Draw your field boundary (Rectangle or Circle)', fontsize=14)
+
+        # Add navigation and drawing instructions (non-blocking help)
+        instructions = (
+            "Navigation:\n"
+            "• Scroll to zoom\n"
+            "• Click+drag to pan (when not drawing)\n\n"
+            "Drawing:\n"
+            "• Select tool with radio buttons\n"
+            "• Click+drag to draw field boundary\n"
+            "• Click 'Analyze' when ready"
+        )
+        self.fig.text(
+            0.02, 0.40, instructions,
+            fontsize=9,
+            family='monospace', va='top',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9)
+        )
         
         return self.fig, self.ax
 
@@ -168,6 +187,20 @@ class MapWindow:
         self.field_selector = FieldSelector(self.ax)
         self.field_selector.setup_selectors()
         
+        # Apply initial selection if provided
+        if self.initial_bbox:
+            try:
+                self.field_selector.set_selection(self.initial_bbox)
+                print(f"Applied initial selection: {self.initial_bbox}")
+            except Exception as e:
+                print(f"Failed to apply initial selection: {e}")
+
+        # Ensure we deactivate selectors when the window closes
+        try:
+            self._close_cid = self.fig.canvas.mpl_connect('close_event', self._on_close)
+        except Exception:
+            self._close_cid = None
+        
         # Tool selection radio buttons (left side)
         tool_ax = self.fig.add_axes([0.02, 0.7, 0.12, 0.15])
         tool_ax.set_title('Draw Tool', fontsize=10)
@@ -199,10 +232,18 @@ class MapWindow:
 
     def _on_analyze_click(self, event):
         """Handle analyze button click."""
-        selection = self.field_selector.get_selection()
-        if selection is None:
-            print("No field selected! Draw a rectangle or circle first.")
+        # 1. Check if selection exists
+        if self.field_selector.selection is None:
+            self._show_error("No field selected! Draw a rectangle or circle first.")
             return
+
+        # 2. Validate selection
+        is_valid, error_msg = self.field_selector.validate_selection()
+        if not is_valid:
+            self._show_error(error_msg)
+            return
+        
+        selection = self.field_selector.get_selection()
         
         print("\n" + "="*50)
         print("STARTING ANALYSIS")
@@ -210,9 +251,14 @@ class MapWindow:
         print(f"Field type: {selection['type']}")
         print(f"Bounding box: {selection['bbox']}")
         
+        # Show loading state
+        self._show_loading()
+        
         # Close the map window and return selection
         self._analysis_requested = True
         self._selection_result = selection
+        
+        # Small delay to show loading state before close (optional, effectively immediate here)
         plt.close(self.fig)
 
     def _on_clear_click(self, event):
@@ -231,6 +277,76 @@ class MapWindow:
         if hasattr(self, '_analysis_requested') and self._analysis_requested:
             return self._selection_result
         return None
+
+    def _show_loading(self, message="Analyzing field..."):
+        """Show a loading message on the figure."""
+        self._loading_text = self.ax.text(
+            0.5, 0.5, message,
+            transform=self.ax.transAxes,
+            fontsize=16,
+            ha='center',
+            va='center',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9),
+            zorder=100
+        )
+        self.fig.canvas.draw_idle()
+
+    def _hide_loading(self):
+        """Remove loading message if present."""
+        if hasattr(self, '_loading_text') and self._loading_text is not None:
+            try:
+                self._loading_text.remove()
+            except Exception:
+                pass
+            self._loading_text = None
+            self.fig.canvas.draw_idle()
+
+    def _show_error(self, message):
+        """Display error message in a popup-like box."""
+        # Clean up any existing error
+        if hasattr(self, '_error_ax') and self._error_ax:
+            self._error_ax.remove()
+        
+        # Create error panel
+        self._error_ax = self.fig.add_axes([0.2, 0.4, 0.6, 0.2])
+        self._error_ax.set_xlim(0, 1)
+        self._error_ax.set_ylim(0, 1)
+        self._error_ax.axis('off')
+        
+        # Add background rect
+        rect = plt.Rectangle((0, 0), 1, 1, transform=self._error_ax.transAxes, 
+                             facecolor='mistyrose', edgecolor='darkred', linewidth=2)
+        self._error_ax.add_patch(rect)
+        
+        self._error_ax.text(0.5, 0.7, "⚠️ Error", fontsize=14, fontweight='bold',
+                      ha='center', color='darkred')
+        self._error_ax.text(0.5, 0.4, message, fontsize=11,
+                      ha='center', wrap=True)
+        
+        # Add dismiss button (its own axes in figure coords)
+        self._dismiss_btn_ax = self.fig.add_axes([0.4, 0.42, 0.2, 0.05])
+        self._dismiss_btn = Button(self._dismiss_btn_ax, 'OK')
+        self._dismiss_btn.on_clicked(self._dismiss_error)
+        
+        self.fig.canvas.draw_idle()
+
+    def _dismiss_error(self, event):
+        """Dismiss error popup."""
+        if hasattr(self, '_error_ax') and self._error_ax:
+            self._error_ax.remove()
+            self._error_ax = None
+        if hasattr(self, '_dismiss_btn_ax') and self._dismiss_btn_ax:
+            self._dismiss_btn_ax.remove()
+            self._dismiss_btn_ax = None
+        self.fig.canvas.draw_idle()
+
+    def _on_close(self, event):
+        """Figure close handler: deactivate selectors to prevent widget errors."""
+        try:
+            if self.field_selector:
+                self.field_selector.deactivate()
+        except Exception:
+            pass
 
     def show(self):
         """Display the map window."""
